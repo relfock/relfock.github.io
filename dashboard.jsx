@@ -78,6 +78,18 @@ const BIOMARKER_DB = {
     improve: "ApoB mirrors LDL reduction strategies: reduce saturated fat, increase soluble fiber, regular aerobic exercise. Statins + ezetimibe most effective medically. PCSK9 inhibitors for refractory cases.",
     icon: "🎯",
   },
+  "ApoA-1": {
+    category: "Lipids",
+    unit: "mg/dL",
+    monitorFrequency: "1y",
+    optimal: [120, 220],     // Cardioprotective; higher is better (typical normal 1.2–1.8 g/L = 120–180 mg/dL)
+    sufficient: [100, 120], // Borderline low
+    high: [0, 0],           // No upper limit — higher ApoA-1 is protective
+    low: [0, 100],          // Low HDL particle protein — increased CV risk
+    description: "ApoA-1 is the main structural protein of HDL (~65% of HDL apolipoprotein) and drives reverse cholesterol transport. Low ApoA-1 increases coronary risk; it is often a better marker than HDL-C. ApoB/ApoA-1 ratio is used in some risk scores. Blueprint-relevant in advanced lipid panels.",
+    improve: "Same as HDL: aerobic exercise, quit smoking, reduce refined carbs; niacin can raise ApoA-1.",
+    icon: "⬆️",
+  },
   "Lp(a)": {
     category: "Lipids",
     unit: "nmol/L",
@@ -129,6 +141,19 @@ const BIOMARKER_DB = {
     description: "Total cholesterol divided by HDL. Cardiovascular risk marker. Blueprint baseline.",
     improve: "Lower LDL and raise HDL (exercise, niacin, reduce refined carbs).",
     icon: "💧",
+  },
+  "ApoB/ApoA-1 Ratio": {
+    category: "Lipids",
+    unit: "ratio",
+    monitorFrequency: "1y",
+    calculated: true,
+    optimal: [0, 0.6],     // Lower atherogenic/protective ratio — lower CV risk
+    sufficient: [0.6, 0.9],
+    high: [0.9, 9999],     // Higher ratio = higher risk
+    low: [0, 0],
+    description: "ApoB ÷ ApoA-1. Single ratio of atherogenic particles to protective HDL protein; used in some CV risk scores. Lower is better. Blueprint-relevant when both ApoB and ApoA-1 are measured.",
+    improve: "Lower ApoB and raise ApoA-1: same as LDL/HDL strategies (diet, exercise, niacin).",
+    icon: "🎯",
   },
 
   // ── METABOLIC ─────────────────────────────────────────────────────────────
@@ -313,6 +338,18 @@ const BIOMARKER_DB = {
     description: "Alkaline phosphatase (ALP) comes from liver, bone, and intestine. Blueprint includes it in baseline and follow-up. Elevated in cholestasis and bone disorders.",
     improve: "Address liver/bile duct or bone cause; ensure adequate zinc and magnesium.",
     icon: "🫁",
+  },
+  "Creatine Kinase": {
+    category: "Liver",
+    unit: "U/L",
+    monitorFrequency: "6mo",
+    optimal: [30, 200],      // Normal (sex and activity dependent)
+    sufficient: [0, 250],   // Standard reference (higher in athletes)
+    high: [250, 9999],      // Muscle damage, rhabdomyolysis, statins
+    low: [0, 30],           // No clinical lower threshold
+    description: "Creatine kinase (CK, S-CK) reflects muscle and cardiac damage. Blueprint tracks for baseline; elevated after intense exercise or statin use.",
+    improve: "If elevated: rule out rhabdomyolysis; reduce statin dose or switch; avoid excessive eccentric exercise before draw.",
+    icon: "🫀",
   },
   "Lipase": {
     category: "Liver",
@@ -751,6 +788,31 @@ const BIOMARKER_DB = {
     improve: "Interpret with FSH and sex steroids; treat underlying cause.",
     icon: "📈",
   },
+  "Progesterone": {
+    category: "Hormones",
+    unit: "ng/mL",
+    monitorFrequency: "1y",
+    gender: "female",
+    optimal: [0, 1],        // Follicular phase; luteal 5–20
+    sufficient: [0, 25],     // Cycle-dependent
+    high: [25, 9999],       // Pregnancy, luteal phase, tumors
+    low: [0, 0],             // Interpret with cycle phase
+    description: "Progesterone (S-Progesteron). Female reproductive hormone; Blueprint tracks in comprehensive panels for women. Interpret with cycle phase.",
+    improve: "Address ovarian function; interpret with clinician.",
+    icon: "📈",
+  },
+  "Free Testosterone Index": {
+    category: "Hormones",
+    unit: "ratio",
+    monitorFrequency: "1y",
+    optimal: [0, 9999],     // Lab- and sex-dependent
+    sufficient: [0, 9999],
+    high: [0, 0],
+    low: [0, 0],
+    description: "Free testosterone index (Fri Testosteron indeks): calculated ratio (e.g. Total T / SHBG × 100 or similar). Reflects bioavailable testosterone. Blueprint-relevant when reported by lab.",
+    improve: "Interpret with Total Testosterone and SHBG.",
+    icon: "📈",
+  },
   "Cortisol": {
     category: "Hormones",
     unit: "μg/dL",
@@ -975,6 +1037,66 @@ const BIOMARKER_DB = {
     low: [0, 0],
     description: "Band neutrophils (immature neutrophils). Elevated in bacterial infection (left shift). Blueprint CBC differential.",
     improve: "Treat underlying infection.",
+    icon: "🛡️",
+  },
+  "Neutrophils (Absolute)": {
+    category: "Complete Blood Count",
+    unit: "10⁹/L",
+    monitorFrequency: "6mo",
+    optimal: [1.5, 5.5],    // Normal absolute count
+    sufficient: [1.0, 7.0], // Standard reference
+    high: [7.0, 9999],
+    low: [0, 1.0],          // Neutropenia
+    description: "Neutrophil absolute count (10⁹/L). When the lab reports differential as absolute counts instead of %, use this. Blueprint tracks WBC differential.",
+    improve: "Address infection or inflammation; avoid offending drugs.",
+    icon: "🛡️",
+  },
+  "Lymphocytes (Absolute)": {
+    category: "Complete Blood Count",
+    unit: "10⁹/L",
+    monitorFrequency: "6mo",
+    optimal: [1.0, 3.5],
+    sufficient: [0.8, 4.0],
+    high: [4.0, 9999],
+    low: [0, 0.8],          // Lymphopenia
+    description: "Lymphocyte absolute count (10⁹/L). Extract when report gives absolute counts for differential.",
+    improve: "Address immune cause.",
+    icon: "🛡️",
+  },
+  "Monocytes (Absolute)": {
+    category: "Complete Blood Count",
+    unit: "10⁹/L",
+    monitorFrequency: "6mo",
+    optimal: [0.2, 0.8],
+    sufficient: [0.1, 1.0],
+    high: [1.0, 9999],
+    low: [0, 0.1],
+    description: "Monocyte absolute count (10⁹/L). Extract when report gives absolute counts.",
+    improve: "Address chronic inflammation or infection.",
+    icon: "🛡️",
+  },
+  "Eosinophils (Absolute)": {
+    category: "Complete Blood Count",
+    unit: "10⁹/L",
+    monitorFrequency: "6mo",
+    optimal: [0, 0.4],
+    sufficient: [0, 0.5],
+    high: [0.5, 9999],
+    low: [0, 0],
+    description: "Eosinophil absolute count (10⁹/L). Extract when report gives absolute counts.",
+    improve: "Identify allergen or parasite.",
+    icon: "🛡️",
+  },
+  "Basophils (Absolute)": {
+    category: "Complete Blood Count",
+    unit: "10⁹/L",
+    monitorFrequency: "6mo",
+    optimal: [0, 0.1],
+    sufficient: [0, 0.2],
+    high: [0.2, 9999],
+    low: [0, 0],
+    description: "Basophil absolute count (10⁹/L). Extract when report gives absolute counts.",
+    improve: "Evaluate if elevated.",
     icon: "🛡️",
   },
 
@@ -1301,8 +1423,20 @@ const BIOMARKER_DB = {
     sufficient: [8.6, 10.2], // Standard reference
     high: [10.2, 9999],      // Hyperparathyroidism, malignancy
     low: [0, 8.6],           // Hypoparathyroidism, vitamin D deficiency
-    description: "Serum calcium. Blueprint includes in baseline and follow-up. Best interpreted with albumin and vitamin D.",
+    description: "Serum total calcium. Blueprint includes in baseline and follow-up. When the lab reports both total and corrected, also extract Corrected Calcium.",
     improve: "Adequate vitamin D and dietary calcium; treat underlying cause.",
+    icon: "🦴",
+  },
+  "Corrected Calcium": {
+    category: "Vitamins & Minerals",
+    unit: "mg/dL",
+    monitorFrequency: "6mo",
+    optimal: [9.0, 10.0],   // Same reference as total; corrected for albumin
+    sufficient: [8.6, 10.2],
+    high: [10.2, 9999],
+    low: [0, 8.6],
+    description: "Albumin-corrected calcium (S-Kalsium korrigert). Preferred for interpretation when albumin is abnormal. Blueprint-relevant when reported.",
+    improve: "Interpret with total calcium and albumin; adequate vitamin D and dietary calcium.",
     icon: "🦴",
   },
   "Chloride": {
@@ -1352,6 +1486,18 @@ const BIOMARKER_DB = {
     description: "Serum CO2 (bicarbonate). Part of metabolic panel. Blueprint follow-up.",
     improve: "Address acid-base disorder and kidney function.",
     icon: "💨",
+  },
+  "Serum pH": {
+    category: "Vitamins & Minerals",
+    unit: "pH",
+    monitorFrequency: "1y",
+    optimal: [7.35, 7.45],   // Normal arterial/venous
+    sufficient: [7.32, 7.48], // Slight deviation
+    high: [7.48, 9999],      // Alkalosis
+    low: [0, 7.32],          // Acidosis
+    description: "Blood/serum pH (from blood gas or venous). Normal 7.35–7.45. Track when reported; often from critical care or metabolic panels.",
+    improve: "Address acid-base cause (respiratory vs metabolic); interpret with CO2 and bicarbonate.",
+    icon: "🧪",
   },
   "Phosphate": {
     category: "Vitamins & Minerals",
@@ -1677,6 +1823,16 @@ const DERIVED_BIOMARKERS = {
       const h = Number(hdl);
       if (!Number.isFinite(t) || !Number.isFinite(h) || h === 0) return null;
       return t / h;
+    },
+    unit: "ratio",
+  },
+  "ApoB/ApoA-1 Ratio": {
+    from: ["ApoB", "ApoA-1"],
+    formula: (apoB, apoA1) => {
+      const b = Number(apoB);
+      const a = Number(apoA1);
+      if (!Number.isFinite(b) || !Number.isFinite(a) || a === 0) return null;
+      return b / a;
     },
     unit: "ratio",
   },
@@ -2494,6 +2650,22 @@ export default function App() {
               </div>
             );
           })()}
+          {currentPerson && (
+            <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, marginLeft: 8, flexWrap: "wrap", minWidth: 0, maxWidth: isMobile ? "100%" : "none" }}>
+              <div style={{ fontSize: 11, color: themeColors.textDim, whiteSpace: "nowrap" }}>
+                {getBirthdayDisplay(currentPerson) && <span>Born {getBirthdayDisplay(currentPerson)}</span>}
+                {getAge(currentPerson) && <span>{getBirthdayDisplay(currentPerson) ? " · " : ""}Age {getAge(currentPerson)}</span>}
+                {currentPerson.gender && <span> · {currentPerson.gender}</span>}
+                <span> · {personEntries.length} test{personEntries.length !== 1 ? "s" : ""}</span>
+              </div>
+              {healthScore !== null && (
+                <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: healthScore > 70 ? RANGE_COLORS.optimal : healthScore > 40 ? RANGE_COLORS.sufficient : RANGE_COLORS.high, fontFamily: "Space Grotesk, sans-serif" }}>{healthScore}</span>
+                  <span style={{ fontSize: 9, color: themeColors.textDim, letterSpacing: 1 }}>SCORE</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 6, marginLeft: "auto", alignItems: "center" }}>
@@ -2506,8 +2678,6 @@ export default function App() {
           >
             {theme === "dark" ? "☀" : "🌙"}
           </button>
-          <button className="btn btn-secondary" onClick={() => { setImportStatus(null); setImportTargetPersonId(selectedPerson); setShowImportModal(true); }} style={{ fontSize: 11 }} disabled={!currentPerson} title={!currentPerson ? "Add a person first" : undefined}>📄 Import LAB results</button>
-          <button className="btn btn-secondary" onClick={() => setShowManualEntry(true)} style={{ fontSize: 11 }} disabled={!currentPerson} title={!currentPerson ? "Add a person first" : undefined}>+ Manual Entry</button>
 
           <div style={{ position: "relative" }}>
             <button
@@ -2522,6 +2692,24 @@ export default function App() {
               <>
                 <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={() => setShowSettingsMenu(false)} />
                 <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, minWidth: 200, background: theme === "dark" ? "#0a1628" : "#fff", border: `1px solid ${themeColors.border}`, borderRadius: 10, padding: 8, zIndex: 100, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
+                    disabled={!currentPerson}
+                    title={!currentPerson ? "Add a person first" : undefined}
+                    onClick={() => { setImportStatus(null); setImportTargetPersonId(selectedPerson); setShowImportModal(true); setShowSettingsMenu(false); }}
+                  >
+                    📄 Import LAB results
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
+                    disabled={!currentPerson}
+                    title={!currentPerson ? "Add a person first" : undefined}
+                    onClick={() => { setShowManualEntry(true); setShowSettingsMenu(false); }}
+                  >
+                    + Manual Entry
+                  </button>
                   <button
                     className="btn btn-secondary"
                     style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
@@ -2633,30 +2821,6 @@ export default function App() {
               <div style={{ fontSize: 18, color: "#8aabcc", marginBottom: 8, fontFamily: "Space Grotesk, sans-serif" }}>No person yet</div>
               <div style={{ fontSize: 13, color: "#3a5a7a", marginBottom: 24 }}>Add your first person to start tracking biomarkers and importing bloodwork.</div>
               <button className="btn btn-primary" onClick={() => setShowAddPersonModal(true)}>+ Add Person</button>
-            </div>
-          )}
-
-          {/* Person Header */}
-          {currentPerson && (
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: isMobile ? 12 : 16, marginBottom: 24 }}>
-              <div style={{ width: isMobile ? 44 : 52, height: isMobile ? 44 : 52, borderRadius: 14, background: `linear-gradient(135deg, ${themeColors.accentDark}, #003070)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: isMobile ? 16 : 18, fontWeight: 700, color: themeColors.accent, border: `2px solid ${themeColors.border}`, flexShrink: 0 }}>{currentPerson.avatar}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: isMobile ? 17 : 20, fontWeight: 700, color: themeColors.text, fontFamily: "Space Grotesk, sans-serif" }}>{currentPerson.name}</div>
-                <div style={{ fontSize: 11, color: themeColors.textDim }}>
-                  {getBirthdayDisplay(currentPerson) && (
-                    <span>Born {getBirthdayDisplay(currentPerson)}{getAge(currentPerson) ? ` · Age ${getAge(currentPerson)}` : ""}</span>
-                  )}
-                  {!getBirthdayDisplay(currentPerson) && getAge(currentPerson) && <span>Age {getAge(currentPerson)}</span>}
-                  {currentPerson.gender && <span> · {currentPerson.gender}</span>}
-                  <span> · {personEntries.length} tests recorded</span>
-                </div>
-              </div>
-              {healthScore !== null && (
-                <div style={{ marginLeft: isMobile ? 0 : "auto", textAlign: "center" }}>
-                  <div style={{ fontSize: isMobile ? 28 : 36, fontWeight: 700, color: healthScore > 70 ? RANGE_COLORS.optimal : healthScore > 40 ? RANGE_COLORS.sufficient : RANGE_COLORS.high, fontFamily: "Space Grotesk, sans-serif", lineHeight: 1 }}>{healthScore}</div>
-                  <div style={{ fontSize: 10, color: themeColors.textDim, letterSpacing: 1 }}>HEALTH SCORE</div>
-                </div>
-              )}
             </div>
           )}
 
@@ -3609,23 +3773,55 @@ function TrendDetail({ name, personEntries, onBack, themeColors }) {
 const AI_PROVIDERS = { gemini: "Gemini", anthropic: "Claude", openai: "OpenAI", groq: "Groq" };
 const AI_PROVIDER_FREE_TIER = { gemini: true, anthropic: true, openai: false, groq: true };
 
-/** Compare profile name with document name: use English name (name+surname only) when present, set equality so order doesn't matter. */
+/** Cyrillic → Latin transliteration (Unicode code points to avoid encoding issues). Russian/Ukrainian. */
+const CYRILLIC_TO_LATIN = {
+  "\u0430": "a", "\u0431": "b", "\u0432": "v", "\u0433": "g", "\u0434": "d", "\u0435": "e", "\u0451": "e",
+  "\u0436": "zh", "\u0437": "z", "\u0438": "i", "\u0439": "y", "\u043a": "k", "\u043b": "l", "\u043c": "m",
+  "\u043d": "n", "\u043e": "o", "\u043f": "p", "\u0440": "r", "\u0441": "s", "\u0442": "t", "\u0443": "u",
+  "\u0444": "f", "\u0445": "kh", "\u0446": "ts", "\u0447": "ch", "\u0448": "sh", "\u0449": "shch",
+  "\u044a": "", "\u044b": "y", "\u044c": "", "\u044d": "e", "\u044e": "yu", "\u044f": "ya",
+  "\u0410": "a", "\u0411": "b", "\u0412": "v", "\u0413": "g", "\u0414": "d", "\u0415": "e", "\u0401": "e",
+  "\u0416": "zh", "\u0417": "z", "\u0418": "i", "\u0419": "y", "\u041a": "k", "\u041b": "l", "\u041c": "m",
+  "\u041d": "n", "\u041e": "o", "\u041f": "p", "\u0420": "r", "\u0421": "s", "\u0422": "t", "\u0423": "u",
+  "\u0424": "f", "\u0425": "kh", "\u0426": "ts", "\u0427": "ch", "\u0428": "sh", "\u0429": "shch",
+  "\u042a": "", "\u042b": "y", "\u042c": "", "\u042d": "e", "\u042e": "yu", "\u042f": "ya",
+};
+function transliterateCyrillic(s) {
+  const str = typeof s === "string" ? s : "";
+  const normalized = str.normalize ? str.normalize("NFC") : str;
+  return normalized.toLowerCase().replace(/[\u0400-\u04ff]/g, (c) => CYRILLIC_TO_LATIN[c] ?? "");
+}
+
+/** Compare profile name with document name. Generic: order, punctuation, script (Cyrillic→Latin); document may have one extra part (patronymic). */
 function nameAndSurnameMatch(profileName, documentNameEnglish, documentNameAsOnDocument) {
   const profile = (profileName || "").trim();
   const docEn = (documentNameEnglish || "").trim();
   const docAs = (documentNameAsOnDocument || "").trim();
-  if (docEn && profile) {
-    const words = (s) => (s || "").toLowerCase().split(/\s+/).filter(Boolean);
-    const set = (s) => new Set(words(s));
-    const a = set(profile);
-    const b = set(docEn);
-    return a.size === b.size && [...a].every((w) => b.has(w));
+  const nameParts = (s, transliterate = false) => {
+    let raw = (s || "").trim();
+    if (raw.normalize) raw = raw.normalize("NFC");
+    raw = raw.toLowerCase();
+    if (!raw) return new Set();
+    if (transliterate) raw = transliterateCyrillic(raw);
+    const words = raw.split(/[\s,]+/).map((w) => w.replace(/[^a-z]/g, "")).filter(Boolean);
+    return new Set(words);
+  };
+  const a = nameParts(profile);
+  if (a.size === 0) return true;
+  const check = (bSet, allowExtraPart = false) => {
+    if (bSet.size === 0) return false;
+    const profileInDoc = [...a].every((w) => bSet.has(w));
+    const sameOrOneExtra = allowExtraPart ? bSet.size <= a.size + 1 : a.size === bSet.size;
+    return profileInDoc && sameOrOneExtra;
+  };
+  if (docAs && /[\u0400-\u04ff]/.test(docAs)) {
+    if (check(nameParts(docAs, true), true)) return true;
   }
-  if (docAs && profile) {
-    const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
-    return norm(profile) === norm(docAs);
-  }
-  return true;
+  if (docEn && check(nameParts(docEn))) return true;
+  if (docEn && /[\u0400-\u04ff]/.test(docEn) && check(nameParts(docEn, true), true)) return true;
+  if (docAs && check(nameParts(docAs, true), true)) return true;
+  if (!docEn && !docAs) return true;
+  return false;
 }
 
 /** Convert PDF base64 to an array of image data URLs (JPEG) for OpenAI. Max 15 pages. */
@@ -3791,6 +3987,7 @@ Triglycerides:
   - mmol/L → mg/dL: multiply by 88.57
   - If already mg/dL: no change
 ApoB: mg/dL target; g/L → mg/dL: × 100
+ApoA-1: mg/dL target; g/L → mg/dL: × 100 (Apolipoprotein A1, HDL protein; higher is better)
 Lp(a): nmol/L target; mg/dL → nmol/L: × 2.5; mg/L → nmol/L: × 0.25
 Fasting Glucose: mg/dL target; mmol/L → mg/dL: × 18.016
 HbA1c: % (NGSP) target; mmol/mol (IFCC) → %: (mmol/mol / 10.929) + 2.15
@@ -3811,7 +4008,7 @@ DHEA-S: μg/dL target; μmol/L → μg/dL: × 36.81
 IGF-1: ng/mL target; nmol/L → ng/mL: × 7.649
 Estradiol: pg/mL target; if already pg/mL use as-is; pmol/L → pg/mL: × 0.2724; nmol/L → pg/mL: × 272.4 (Norwegian labs often use nmol/L). Recognise as Estradiol: E2, Oestradiol, 17-beta estradiol, 17β-estradiol, S-Østradiol-17beta, S-Oestradiol-17beta — output key must be exactly "Estradiol".
 Cortisol: μg/dL target; nmol/L → μg/dL: ÷ 27.59; ng/mL → μg/dL: ÷ 10
-Vitamin D: ng/mL target; nmol/L → ng/mL: ÷ 2.496
+Vitamin D: ng/mL target; nmol/L → ng/mL: ÷ 2.496. S-Vitamin D, Vitamin D3, 25-OH vitamin D (Norwegian/lab) all map to Vitamin D — extract and convert.
 Vitamin B12 (Total B12 only): pg/mL target; pmol/L → pg/mL: × 1.355. Do NOT apply this to Active B12.
 Active B12: pmol/L target. If the lab result is already in pmol/L, use the value as-is — do NOT convert. Active B12 is different from Total B12.
 Folate: ng/mL target; nmol/L → ng/mL: ÷ 2.266
@@ -3832,20 +4029,25 @@ MCV: fL target; Mean Corpuscular Volume (usually already correct)
 MCH: pg target; Mean Corpuscular Hemoglobin (usually already correct)
 MCHC: g/dL target (usually already correct)
 MPV: fL target; Mean Platelet Volume (usually already correct)
-Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils: % target (CBC differential; usually already correct)
+Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils: % target when report gives percentage. When the report gives WBC differential as ABSOLUTE counts (unit 10⁹/L or ×10⁹/L or K/μL — numeric same as 10⁹/L), extract instead to Neutrophils (Absolute), Lymphocytes (Absolute), Monocytes (Absolute), Eosinophils (Absolute), Basophils (Absolute) with value in 10⁹/L. Do not duplicate: if absolute counts are given, use the (Absolute) keys; if only % given, use the percentage keys.
 Total Protein: g/dL target; g/L → g/dL: ÷ 10
 Albumin: g/dL target; g/L → g/dL: ÷ 10
 Globulin: g/dL target; often computed as Total Protein − Albumin
 Alkaline Phosphatase: U/L target (usually already correct); ALP = Alkaline Phosphatase
+Creatine Kinase: U/L target (usually already correct); S-CK (Norwegian) = Creatine Kinase. Blueprint tracks CK.
+Progesterone: ng/mL target; nmol/L → ng/mL: ÷ 3.18. S-Progesteron (Norwegian). Female hormone; extract when reported.
+Free Testosterone Index: ratio (dimensionless); Fri Testosteron indeks (Norwegian). Extract when lab reports this calculated index — different from Free Testosterone (mass concentration).
 Bilirubin, Total: mg/dL target; μmol/L → mg/dL: ÷ 17.1
 TPO Antibodies: IU/mL target; Thyroid peroxidase antibody, anti-TPO (usually already correct)
 Thyroglobulin Antibodies: IU/mL target (usually already correct)
 Prolactin: ng/mL target; μg/L = ng/mL (no change)
 FSH, LH: mIU/mL target (usually already correct)
 Vitamin A: μg/dL target; μmol/L → μg/dL: × 28.6
-Calcium: mg/dL target; mmol/L → mg/dL: × 4
+Calcium: mg/dL target; mmol/L → mg/dL: × 4. Extract total calcium (S-Kalsium, Kalsium when not corrected) as "Calcium".
+Corrected Calcium: mg/dL target; mmol/L → mg/dL: × 4. Extract S-Kalsium korrigert, corrected calcium, albumin-corrected calcium as "Corrected Calcium". When the report has both total and corrected, extract BOTH.
 Sodium, Potassium, Chloride: mEq/L or mmol/L (usually same numeric)
 Carbon Dioxide: mEq/L (bicarbonate; usually already correct)
+Serum pH: pH units (blood/serum; usually already correct; distinct from pH (Urine))
 Phosphate: mg/dL target; mmol/L → mg/dL: × 3.1
 Selenium: μg/L target (usually already correct)
 Copper: μg/dL target; μmol/L → μg/dL: × 6.35
@@ -3870,12 +4072,13 @@ Rheumatoid Factor: IU/mL target (usually already correct)
 ANA Screen: titer or positive/negative (Antinuclear Antibodies Screen; output numeric if titer e.g. 1:40 as 40, or 0 if negative)
 Band Neutrophils: % target (CBC; usually already correct)
 Cholesterol/HDL Ratio: ratio; compute as Total Cholesterol ÷ HDL Cholesterol if not reported
+ApoB/ApoA-1 Ratio: ratio; compute as ApoB ÷ ApoA-1 when both are reported (do not report if only one is present)
 Albumin/Globulin Ratio: ratio; compute as Albumin ÷ Globulin if not reported
 Iron Saturation: % target; compute as (Iron ÷ TIBC)×100 if not reported (Iron % Saturation)
-Recognise aliases: Holotranscobalamin = Active B12, holoTC = Active B12, Vitamin B12 (total) = Total B12, Glucose (fasting) = Fasting Glucose, CRP (hs) = hs-CRP, GGT = Gamma Glutamyl Transferase, eGFR = eGFR (estimated GFR). Blueprint names: Non Hdl Cholesterol = Non-HDL Cholesterol, Protein (Urine) = Urine Protein, White Blood Cell Count = WBC, Red Blood Cell Count = RBC, Platelet Count = Platelets, Triiodothyronine (T3 Free) = Free T3, Thyroxine (T4 Free) = Free T4, Thyroid Stimulating Hormone = TSH, Testosterone Total = Total Testosterone, Testosterone Free = Free Testosterone, Urea Nitrogen (Bun) = BUN, Estimated Glomerular Filtration Rate = eGFR, Hemoglobin A1C = HbA1c, High-Sensitivity C-Reactive Protein = hs-CRP, Sex Hormone Binding Globulin = SHBG, Dhea Sulfate = DHEA-S, Iron Binding Capacity = TIBC, Iron % Saturation = Iron Saturation, Ldl Particle Number = LDL Particle Number, Chol/Hdlc Ratio = Cholesterol/HDL Ratio, Albumin/Globulin Ratio = Albumin/Globulin Ratio.
+Recognise aliases: Holotranscobalamin = Active B12, holoTC = Active B12, Vitamin B12 (total) = Total B12, Glucose (fasting) = Fasting Glucose, CRP (hs) = hs-CRP, GGT = Gamma Glutamyl Transferase, eGFR = eGFR (estimated GFR). Apo A-1 = ApoA-1, Apolipoprotein A1 = ApoA-1. Norwegian: Bilirubin or Total bilirubin → output key exactly "Bilirubin, Total" (comma included). Blueprint names: Non Hdl Cholesterol = Non-HDL Cholesterol, Protein (Urine) = Urine Protein, White Blood Cell Count = WBC, Red Blood Cell Count = RBC, Platelet Count = Platelets, Triiodothyronine (T3 Free) = Free T3, Thyroxine (T4 Free) = Free T4, Thyroid Stimulating Hormone = TSH, Testosterone Total = Total Testosterone, Testosterone Free = Free Testosterone, Urea Nitrogen (Bun) = BUN, Estimated Glomerular Filtration Rate = eGFR, Hemoglobin A1C = HbA1c, High-Sensitivity C-Reactive Protein = hs-CRP, Sex Hormone Binding Globulin = SHBG, Dhea Sulfate = DHEA-S, Iron Binding Capacity = TIBC, Iron % Saturation = Iron Saturation, Ldl Particle Number = LDL Particle Number, Chol/Hdlc Ratio = Cholesterol/HDL Ratio, Albumin/Globulin Ratio = Albumin/Globulin Ratio.
 
 LANGUAGE MAPPING (use EXACT English key in extracted output):
-Norwegian: Kreatinin=Creatinine, Glukose=Fasting Glucose, Kolesterol=Total Cholesterol, Triglyserider=Triglycerides, Tyreoideastimulerende hormon/TSH=TSH, Urinsyre=Uric Acid, Homocystein=Homocysteine, Oestradiol=Estradiol, E2=Estradiol, S-Østradiol-17beta=Estradiol, S-Oestradiol-17beta=Estradiol
+Norwegian: Kreatinin=Creatinine, Glukose=Fasting Glucose, Fasting glukose=Fasting Glucose, Kolesterol=Total Cholesterol, Total kolesterol=Total Cholesterol, LDL-kolesterol=LDL Cholesterol, LDL kolesterol=LDL Cholesterol, HDL-kolesterol=HDL Cholesterol, HDL kolesterol=HDL Cholesterol, Triglyserider=Triglycerides, Tyreoideastimulerende hormon=TSH, TSH=TSH, Urinsyre=Uric Acid, Homocystein=Homocysteine, Oestradiol=Estradiol, Østradiol=Estradiol, E2=Estradiol, S-Østradiol-17beta=Estradiol, S-Oestradiol-17beta=Estradiol, Hemoglobin=Hemoglobin, Hb=Hemoglobin, Hematokrit=Hematocrit, Erytrocytter=RBC, Leukocytter=WBC, Hvite blodceller=WBC, Trombocytter=Platelets, Røde blodceller=RBC, Kreatinin (serum)=Creatinine, Ureum=BUN, Urea=BUN, eGFR=eGFR, Estimert GFR=eGFR, ASAT=AST, ALAT=ALT, Gamma-GT=GGT, GGT=GGT, Alkalisk fosfatase=Alkaline Phosphatase, ALP=Alkaline Phosphatase,  Sensitivt CRP=hs-CRP, CRP (sens)=hs-CRP, hs-CRP=hs-CRP, Fri T3=Free T3, fT3=Free T3, Triiodothyronin=Free T3, Fri T4=Free T4, fT4=Free T4, Thyroxin=Free T4, Testosteron=Total Testosterone, Fri testosteron=Free Testosterone, Prolaktin=Prolactin, Kortisol=Cortisol, DHEA-S=DHEA-S, SHBG=SHBG, Kobalamin=Total B12, Vitamin B12=Total B12, Holotranscobalamin=Active B12, Aktiv B12=Active B12, Folat=Folate, Vitamin D=Vitamin D, 25-OH-vitamin D=Vitamin D, 25-hydroxyvitamin D=Vitamin D, Jern=Iron, Ferritin=Ferritin, Total jernbindingskapasitet=TIBC, Jernbindingskapasitet=TIBC, Jernmetning=Iron Saturation, Magnesium=Magnesium, Zink=Zinc, Selen=Selenium, Kalsium=Calcium, S-Kalsium=Calcium, Natrium=Sodium, Kalium=Potassium, Klorid=Chloride, Fosfat=Phosphate, Kopper=Copper, Albumin=Albumin, Total protein=Total Protein, Globulin=Globulin, Cystatin C=Cystatin C, Urin albumin=Urine Albumin, Urin kreatinin=Urine Creatinine, Urin protein=Urine Protein, Protein (urin)=Urine Protein, Neutrofile=Neutrophils, Lymfocytter=Lymphocytes, Monocytter=Monocytes, Eosinofiler=Eosinophils, Basofiler=Basophils, Insulin=Fasting Insulin, Fasting insulin=Fasting Insulin, HbA1c=HbA1c, Glykemisk hemoglobin=HbA1c, TPO-antistoff=TPO Antibodies, Thyroglobulin-antistoff=Thyroglobulin Antibodies, Lipase=Lipase, Amylase=Amylase, Revmatoid faktor=Rheumatoid Factor, MMA=Methylmalonic Acid, Metylmalonsyre=Methylmalonic Acid, S-Kalsium korrigert=Corrected Calcium, S-CK=Creatine Kinase, S-Progesteron=Progesterone, Vitamin D3=Vitamin D, S-Vitamin D=Vitamin D, Fri Testosteron indeks=Free Testosterone Index
 Russian: Креатинин=Creatinine, Глюкоза=Fasting Glucose, Холестерин=Total Cholesterol, Триглицериды=Triglycerides, ТТГ=TSH, Мочевая кислота=Uric Acid, Гомоцистеин=Homocysteine, ЛПНП=LDL Cholesterol, ЛПВП=HDL Cholesterol, Гемоглобин=Hemoglobin, Ферритин=Ferritin, Эстрадиол=Estradiol
 Armenian: Կրեատինին=Creatinine, Գլյուկոզ=Fasting Glucose, Խոլեստerոլ=Total Cholesterol, Հեմoglobin=Hemoglobin
 English: E2=Estradiol, Oestradiol=Estradiol, 17-beta estradiol=Estradiol
