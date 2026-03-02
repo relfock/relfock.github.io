@@ -2235,6 +2235,29 @@ export default function App() {
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showEditPersonModal, setShowEditPersonModal] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showChatPanel, setShowChatPanel] = useState(false);
+  const [chatConversations, setChatConversations] = useState(() => [{ id: 1, messages: [] }]);
+  const [activeChatId, setActiveChatId] = useState(1);
+  const [chatProvider, setChatProvider] = useState("groq");
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatWaitSeconds, setChatWaitSeconds] = useState(null);
+  const [chatPlayingId, setChatPlayingId] = useState(null);
+  const [chatAtOpen, setChatAtOpen] = useState(false);
+  const [chatAtPrefix, setChatAtPrefix] = useState("");
+  const [chatAtIndex, setChatAtIndex] = useState(0);
+  const [chatAttachedFiles, setChatAttachedFiles] = useState([]);
+  const [chatMinimized, setChatMinimized] = useState(false);
+  const [chatWindowRect, setChatWindowRect] = useState(() => {
+    if (typeof window === "undefined") return { x: 100, y: 100, w: 540, h: 420 };
+    const w = Math.min(560, window.innerWidth - 40);
+    const h = Math.min(440, window.innerHeight - 80);
+    return { x: Math.max(0, (window.innerWidth - w) / 2), y: Math.max(0, (window.innerHeight - h) / 2), w, h };
+  });
+  const chatDragStart = useRef(null);
+  const chatResizeStart = useRef(null);
+  const chatInputRef = useRef(null);
+  const chatAtListRef = useRef(null);
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   const [theme, setTheme] = useState(() => {
     if (typeof window === "undefined") return "dark";
@@ -2489,6 +2512,421 @@ export default function App() {
 
   const counts = getStatusCounts();
   const healthScore = counts.total > 0 ? Math.round((counts.optimal + counts.elite + counts.sufficient * 0.5) / counts.total * 100) : null;
+
+  const findBiomarkerKey = (name) => {
+    const n = (name || "").trim();
+    if (!n) return null;
+    const lower = n.toLowerCase();
+    const exact = Object.keys(BIOMARKER_DB).find((k) => k.toLowerCase() === lower);
+    if (exact) return exact;
+    return Object.keys(BIOMARKER_DB).find((k) => k.toLowerCase().includes(lower) || lower.includes(k.toLowerCase())) || null;
+  };
+
+  const chatAtSuggestionsList = [
+    "@all",
+    "@all_wtrends",
+    "@person",
+    "@norecord",
+    ...CATEGORIES.flatMap((c) => [`@${c}`, `@${c}_wtrends`]),
+    ...allBiomarkers.flatMap((b) => [`@${b}`, `@${b}_wtrend`]),
+  ];
+  const chatAtFiltered = chatAtPrefix === "" ? chatAtSuggestionsList : chatAtSuggestionsList.filter((s) => s.toLowerCase().slice(1).startsWith(chatAtPrefix.toLowerCase()));
+
+  const handleChatInputChange = (e) => {
+    const v = e.target.value;
+    const pos = e.target.selectionStart ?? v.length;
+    const before = v.slice(0, pos);
+    const atPos = before.lastIndexOf("@");
+    setChatInput(v);
+    if (atPos !== -1 && (pos === atPos + 1 || /^[\w\s]*$/.test(before.slice(atPos + 1)))) {
+      setChatAtPrefix(before.slice(atPos + 1, pos));
+      setChatAtOpen(true);
+      setChatAtIndex(0);
+    } else {
+      setChatAtOpen(false);
+    }
+  };
+
+  const applyChatAtSuggestion = (suggestion) => {
+    const el = chatInputRef.current;
+    if (!el) return;
+    const v = chatInput;
+    const pos = el.selectionStart ?? v.length;
+    const before = v.slice(0, pos);
+    const atPos = before.lastIndexOf("@");
+    if (atPos === -1) return;
+    const newVal = v.slice(0, atPos) + suggestion + " " + v.slice(pos);
+    setChatInput(newVal);
+    setChatAtOpen(false);
+    setTimeout(() => {
+      el.focus();
+      const newPos = atPos + suggestion.length + 1;
+      el.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
+  const handleChatKeyDown = (e) => {
+    if (chatAtOpen && chatAtFiltered.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setChatAtIndex((i) => (i + 1) % chatAtFiltered.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setChatAtIndex((i) => (i - 1 + chatAtFiltered.length) % chatAtFiltered.length);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        applyChatAtSuggestion(chatAtFiltered[chatAtIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        setChatAtOpen(false);
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  };
+
+  useEffect(() => {
+    if (!showChatPanel) return;
+    const onMove = (e) => {
+      if (chatDragStart.current) {
+        const { startX, startY } = chatDragStart.current;
+        setChatWindowRect((r) => ({
+          ...r,
+          x: Math.max(0, r.x + e.clientX - startX),
+          y: Math.max(0, r.y + e.clientY - startY),
+        }));
+        chatDragStart.current = { ...chatDragStart.current, startX: e.clientX, startY: e.clientY };
+      }
+      if (chatResizeStart.current) {
+        const { startW, startH, startX, startY } = chatResizeStart.current;
+        const w = Math.max(320, Math.min(window.innerWidth - 20, startW + e.clientX - startX));
+        const h = Math.max(280, Math.min(window.innerHeight - 60, startH + e.clientY - startY));
+        setChatWindowRect((r) => ({ ...r, w, h }));
+        chatResizeStart.current = { startW: w, startH: h, startX: e.clientX, startY: e.clientY };
+      }
+    };
+    const onUp = () => {
+      chatDragStart.current = null;
+      chatResizeStart.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [showChatPanel]);
+
+  useEffect(() => {
+    if (chatInput === "" && chatInputRef.current) {
+      chatInputRef.current.style.height = "auto";
+    }
+  }, [chatInput]);
+
+  const buildChatContext = (text, snapshot, entriesList, includePersonName, personBiomarkerKeys = null) => {
+    const lines = [];
+    const addBiomarkerLine = (key, withTrend) => {
+      const meta = BIOMARKER_DB[key];
+      const unit = meta?.unit ?? "";
+      const snap = snapshot[key];
+      if (!snap) {
+        lines.push(`${key}: no data`);
+        return;
+      }
+      const status = getStatus(key, snap.val);
+      lines.push(`${key}: ${snap.val} ${unit} (as of ${snap.date}) — ${status}`);
+      if (withTrend && entriesList.length > 0) {
+        const trendPoints = entriesList
+          .map((e) => {
+            const withDerived = computeDerivedBiomarkers(e.biomarkers || {});
+            const v = withDerived[key];
+            return v !== undefined ? { date: e.date, value: v } : null;
+          })
+          .filter(Boolean);
+        if (trendPoints.length > 0) {
+          lines.push(`  Trend: ${trendPoints.map((p) => `${p.date}=${p.value}`).join(" → ")}`);
+        }
+      }
+    };
+    const allKeys = Object.keys(BIOMARKER_DB);
+    const keysForPerson = personBiomarkerKeys && personBiomarkerKeys.length > 0 ? personBiomarkerKeys : allKeys;
+    const catLower = (c) => c.toLowerCase();
+    const hasAll = /\@all\b/.test(text) && !/\@all_wtrends\b/.test(text);
+    const hasAllWtrends = /\@all_wtrends\b/.test(text);
+    const categoryWtrends = [...text.matchAll(/\@([^@]+?)_wtrends\b/gi)].map((m) => m[1].trim());
+    const categoryOnly = [...text.matchAll(/\@([^@]+?)(?=\s|$|@)/g)].map((m) => m[1].trim()).filter((s) => {
+      if (s === "all" || s.toLowerCase() === "all_wtrends" || s.toLowerCase() === "norecord") return false;
+      if (s.endsWith("_wtrends") || s.endsWith("_wtrend")) return false;
+      return true;
+    });
+    const sortedKeys = [...keysForPerson].sort((a, b) => b.length - a.length);
+    const biomarkerOnlySet = new Set();
+    const biomarkerWtrendSet = new Set();
+    const restLower = text.toLowerCase();
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== "@") continue;
+      const rest = text.slice(i + 1);
+      const restLo = restLower.slice(i + 1);
+      let matched = false;
+      for (const key of sortedKeys) {
+        const keyLo = key.toLowerCase();
+        const afterKey = rest.length > key.length ? rest[key.length] : "";
+        const wordBoundary = rest.length === key.length || /[\s@,.\])]/.test(afterKey);
+        const wtrendSuffix = "_wtrend";
+        if (restLo.startsWith(keyLo + wtrendSuffix) && (rest.length === key.length + 7 || /[\s@,.\])]/.test(rest[key.length + 7]))) {
+          biomarkerWtrendSet.add(key);
+          matched = true;
+          break;
+        }
+        if (restLo.startsWith(keyLo) && wordBoundary) {
+          biomarkerOnlySet.add(key);
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+      const wtrendMatch = restLo.match(/^(.+?)_wtrend(?=[\s@,.\])]|$)/);
+      const token = wtrendMatch ? rest.slice(0, wtrendMatch[1].length).trim() : rest.match(/^[^\s@,.\])]+/)?.[0]?.trim() ?? rest.trim().split(/[\s@,.\])]/)[0]?.trim() ?? "";
+      const wantWtrend = !!wtrendMatch;
+      if (token) {
+        const resolved = findBiomarkerKey(token);
+        if (resolved && keysForPerson.includes(resolved)) {
+          if (wantWtrend) biomarkerWtrendSet.add(resolved);
+          else biomarkerOnlySet.add(resolved);
+        }
+      }
+    }
+    const biomarkerOnly = [...biomarkerOnlySet];
+    const biomarkerWtrend = [...biomarkerWtrendSet];
+    const categoriesMentioned = categoryOnly.filter((s) => CATEGORIES.some((c) => catLower(c) === s.toLowerCase()));
+    const categoryWtrendsMentioned = categoryWtrends.filter((s) => CATEGORIES.some((c) => catLower(c) === s.toLowerCase()));
+
+    if (includePersonName) lines.push(`Patient (explicitly shared by user): ${includePersonName}\n`);
+    const hasNorecord = /\@norecord\b/.test(text);
+    if (hasNorecord) {
+      const noDataKeys = keysForPerson.filter((k) => !snapshot[k]);
+      if (noDataKeys.length > 0) lines.push(`Biomarkers with no data yet: ${noDataKeys.join(", ")}\n`);
+    }
+    if (hasAll || hasAllWtrends) {
+      const keysToShow = keysForPerson.filter((k) => snapshot[k]);
+      keysToShow.forEach((k) => addBiomarkerLine(k, hasAllWtrends));
+    }
+    categoriesMentioned.forEach((catName) => {
+      const cat = CATEGORIES.find((c) => catLower(c) === catName.toLowerCase());
+      if (!cat) return;
+      const keysInCat = keysForPerson.filter((k) => BIOMARKER_DB[k]?.category === cat && snapshot[k]);
+      if (keysInCat.length > 0) lines.push(`\n[${cat}]`);
+      keysInCat.forEach((k) => addBiomarkerLine(k, false));
+    });
+    categoryWtrendsMentioned.forEach((catName) => {
+      const cat = CATEGORIES.find((c) => catLower(c) === catName.toLowerCase());
+      if (!cat) return;
+      const keysInCat = keysForPerson.filter((k) => BIOMARKER_DB[k]?.category === cat && snapshot[k]);
+      if (keysInCat.length > 0) lines.push(`\n[${cat} — with trends]`);
+      keysInCat.forEach((k) => addBiomarkerLine(k, true));
+    });
+    biomarkerOnly.forEach((key) => addBiomarkerLine(key, false));
+    biomarkerWtrend.forEach((key) => addBiomarkerLine(key, true));
+    return lines.length > 0 ? lines.join("\n") : null;
+  };
+
+  const formatChatReply = (raw) => {
+    if (typeof raw !== "string") return "";
+    const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    let out = escape(raw);
+    out = out.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+    out = out.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/\*([^*]+?)\*/g, "<em>$1</em>");
+    out = out.replace(/\n/g, "<br />");
+    return out;
+  };
+
+  const sendChatMessage = async () => {
+    const text = (chatInput || "").trim();
+    if (!text || chatLoading) return;
+    const isDev = import.meta.env.DEV;
+    const includePersonDetails = currentPerson && /\@(person|name)\b/i.test(text)
+      ? (currentPerson.name + (currentPerson.birthday ? ", DOB " + getBirthdayDisplay(currentPerson) : ""))
+      : null;
+    const contextBlock = currentPerson && buildChatContext(text, cumulativeSnapshot, personEntries, includePersonDetails, allBiomarkers);
+    const urlRegex = /https?:\/\/[^\s<>"')\]]+/gi;
+    const urlMatches = text.match(urlRegex) || [];
+    const uniqueUrls = [...new Set(urlMatches.map((u) => u.replace(/[.,;:!?)]+$/, "")))];
+    const useNativeLinkTool = chatProvider === "groq-compound";
+    let urlContent = "";
+    if (!useNativeLinkTool) {
+      for (const url of uniqueUrls) {
+        try {
+          const base = (import.meta.env.VITE_API_BASE || "").trim() || "";
+          const res = await fetch(`${base}/api/fetch-url`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+          const data = await res.json();
+          if (data.text) urlContent += `\n\n--- Content from ${url} ---\n\n${data.text}`;
+          else if (data.error) urlContent += `\n\n[Could not fetch ${url}: ${data.error}]`;
+        } catch (e) {
+          urlContent += `\n\n[Could not fetch ${url}: ${e?.message || "network error"}]`;
+        }
+      }
+    }
+    const linkBlock = urlContent ? `[Content from linked page(s):]${urlContent}\n\n` : "";
+    const userContent = contextBlock
+      ? `[Biomarker context shared in this conversation:\n${contextBlock}]\n\n${linkBlock}User question: ${text}`
+      : linkBlock
+        ? `${linkBlock}User question: ${text}`
+        : text;
+    const userMsg = { role: "user", content: userContent, displayContent: text };
+    const activeMessages = chatConversations.find((c) => c.id === activeChatId)?.messages ?? [];
+    setChatConversations((prev) =>
+      prev.map((c) => (c.id === activeChatId ? { ...c, messages: [...c.messages, userMsg] } : c))
+    );
+    setChatInput("");
+    setChatAttachedFiles([]);
+    setChatLoading(true);
+    const messagesForApi = [...activeMessages, userMsg].map((m) => ({ role: m.role, content: typeof m.content === "string" ? m.content : m.content }));
+    const systemPrompt = "You are a helpful health and biomarker assistant. Use only the biomarker data that the user has shared in this conversation (via @ mentions). Do not refer to, infer, or request names, birth dates, or other personal details unless the user has explicitly shared them (e.g. with @person). When the user provides biomarker data in [context], use it to answer. Be concise and accurate. If units or reference ranges are mentioned, use them. Format responses in plain text; avoid markdown asterisks for emphasis where possible, or use them consistently. When the user includes a link, content from that page may be provided in [Content from linked page(s)]; use it to answer. If you see [Could not fetch <url>: ...] then the fetch failed or the page could not be read; tell the user in a short, friendly way and use the exact suggestion from that message (e.g. to copy the table or text and paste it here) rather than rephrasing.";
+    try {
+      let reply = "";
+      if (chatProvider === "anthropic") {
+        const apiUrl = isDev ? "/api/anthropic" : "https://api.anthropic.com/v1/messages";
+        const key = (import.meta.env.VITE_ANTHROPIC_API_KEY || "").trim();
+        const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01", ...(key ? { "x-api-key": key } : {}) };
+        const body = {
+          model: "claude-3-5-sonnet-20241022",
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: messagesForApi,
+        };
+        const res = await fetch(apiUrl, { method: "POST", headers, body: JSON.stringify(body) });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        reply = (data.content || []).map((c) => c?.text || "").join("");
+      } else if (chatProvider === "openai") {
+        const base = isDev ? "/api/openai" : "https://api.openai.com";
+        const key = (import.meta.env.VITE_OPENAI_API_KEY || "").trim();
+        const res = await fetch(`${base}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "system", content: systemPrompt }, ...messagesForApi],
+            max_tokens: 4096,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        reply = data?.choices?.[0]?.message?.content ?? "";
+      } else if (chatProvider === "ollama") {
+        const base = (import.meta.env.VITE_OLLAMA_BASE_URL || "").trim() || (isDev ? "/api/ollama" : "http://localhost:11434");
+        const model = (import.meta.env.VITE_OLLAMA_MODEL || "llama3.2").trim();
+        const res = await fetch(`${base}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "system", content: systemPrompt }, ...messagesForApi],
+            max_tokens: 4096,
+            stream: false,
+          }),
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          if (res.status === 404 || /not found|unknown model/i.test(errText)) {
+            throw new Error(`Ollama model "${model}" not found. Run: ollama pull ${model}`);
+          }
+          throw new Error(errText || `Ollama ${res.status}`);
+        }
+        const data = await res.json();
+        reply = data?.choices?.[0]?.message?.content ?? "";
+      } else if (chatProvider === "groq-compound" || chatProvider === "groq") {
+        const base = isDev ? "/api/groq" : "https://api.groq.com";
+        const key = (import.meta.env.VITE_GROQ_API_KEY || "").trim();
+        const isCompound = chatProvider === "groq-compound";
+        const body = isCompound
+          ? { model: "groq/compound", messages: [{ role: "system", content: systemPrompt }, ...messagesForApi], max_tokens: 4096, compound_custom: { tools: { enabled_tools: ["visit_website", "web_search"] } } }
+          : { model: "meta-llama/llama-4-scout-17b-16e-instruct", messages: [{ role: "system", content: systemPrompt }, ...messagesForApi], max_tokens: 4096 };
+        const headers = { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(isCompound ? { "Groq-Model-Version": "latest" } : {}) };
+        const GROQ_TIMEOUT_MS = 120_000;
+        const doReq = (signal) => fetch(`${base}/openai/v1/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal });
+        const parseWaitSec = (msg) => { const m = (msg || "").match(/try again in ([\d.]+)s/i); return m ? Math.min(60, Math.max(18, Math.ceil(parseFloat(m[1]) + 2))) : 20; };
+        let res;
+        const runWithTimeout = async () => {
+          const ac = new AbortController();
+          const timeoutId = setTimeout(() => ac.abort(), GROQ_TIMEOUT_MS);
+          try {
+            res = await doReq(ac.signal);
+            return res;
+          } finally {
+            clearTimeout(timeoutId);
+          }
+        };
+        res = await runWithTimeout();
+        for (let retries = 0; retries < 2 && !res.ok; retries++) {
+          const errText = await res.text();
+          let errJson;
+          try { errJson = JSON.parse(errText); } catch (_) {}
+          const isRateLimit = res.status === 429 || errJson?.error?.code === "rate_limit_exceeded";
+          if (!isRateLimit) throw new Error(errText);
+          const waitSec = parseWaitSec(errJson?.error?.message);
+          const waitMs = waitSec * 1000;
+          setChatWaitSeconds(waitSec);
+          const interval = setInterval(() => {
+            setChatWaitSeconds((s) => (s == null || s <= 1 ? null : s - 1));
+          }, 1000);
+          await new Promise((r) => setTimeout(r, waitMs));
+          clearInterval(interval);
+          setChatWaitSeconds(null);
+          res = await runWithTimeout();
+        }
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        reply = data?.choices?.[0]?.message?.content ?? "";
+      } else {
+        const base = isDev ? "/api/gemini" : "https://generativelanguage.googleapis.com";
+        const key = (import.meta.env.VITE_GEMINI_API_KEY || "").trim();
+        const url = `${base}/v1beta/models/gemini-2.0-flash:generateContent`;
+        const headers = { "Content-Type": "application/json" };
+        if (!isDev && key) headers["x-goog-api-key"] = key;
+        const contents = messagesForApi.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.content }] }));
+        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.2 } }) });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        reply = (data.candidates?.[0]?.content?.parts || []).map((p) => p?.text || "").join("");
+      }
+      if (reply.trim()) {
+        setChatConversations((prev) =>
+          prev.map((c) => (c.id === activeChatId ? { ...c, messages: [...c.messages, { role: "assistant", content: reply.trim() }] } : c))
+        );
+      }
+    } catch (e) {
+      const raw = e?.message || String(e);
+      let msg;
+      try {
+        const err = typeof raw === "string" && raw.startsWith("{") ? JSON.parse(raw) : null;
+        if (err?.error?.code === "request_too_large" || /request entity too large|request_too_large/i.test(raw)) {
+          msg = "Request too large. Your message, plus biomarker context, linked page content, and conversation history, exceed this provider’s limit. Try starting a new chat, using fewer @ mentions, or including fewer or smaller linked pages.";
+        } else if (e?.name === "AbortError" || /abort/i.test(raw)) {
+          msg = "Request timed out (2 min). Groq Compound can be slow when visiting links; try again or use a simpler question.";
+        } else {
+          msg = "Error: " + raw;
+        }
+      } catch (_) {
+        msg = "Error: " + raw;
+      }
+      setChatConversations((prev) =>
+        prev.map((c) => (c.id === activeChatId ? { ...c, messages: [...c.messages, { role: "assistant", content: msg }] } : c))
+      );
+    } finally {
+      setChatLoading(false);
+      setChatWaitSeconds(null);
+    }
+  };
 
   if (loading) return (
     <div style={{ background: themeColors.appBg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -3156,14 +3594,20 @@ export default function App() {
                   if (worsening) return 2;
                   return 3;
                 };
+                const hasData = (name) => cumulativeSnapshot[name]?.val !== undefined;
                 const sortedForTable = [...filteredBiomarkers].sort((a, b) => {
                   const dir = biomarkersTableSort.dir === "asc" ? 1 : -1;
+                  const dataA = hasData(a);
+                  const dataB = hasData(b);
+                  if (!dataA && dataB) return 1;
+                  if (dataA && !dataB) return -1;
+                  if (!dataA && !dataB) return dir * a.localeCompare(b, undefined, { sensitivity: "base" });
                   if (biomarkersTableSort.by === "name") {
                     return dir * a.localeCompare(b, undefined, { sensitivity: "base" });
                   }
                   if (biomarkersTableSort.by === "status") {
-                    const statusA = cumulativeSnapshot[a]?.val !== undefined ? getStatus(a, cumulativeSnapshot[a].val) : "unknown";
-                    const statusB = cumulativeSnapshot[b]?.val !== undefined ? getStatus(b, cumulativeSnapshot[b].val) : "unknown";
+                    const statusA = getStatus(a, cumulativeSnapshot[a].val);
+                    const statusB = getStatus(b, cumulativeSnapshot[b].val);
                     const rankA = STATUS_SORT_ORDER[statusA] ?? 6;
                     const rankB = STATUS_SORT_ORDER[statusB] ?? 6;
                     return dir * (rankA - rankB || a.localeCompare(b));
@@ -3179,13 +3623,13 @@ export default function App() {
                     return dir * (rA - rB || a.localeCompare(b));
                   }
                   if (biomarkersTableSort.by === "value") {
-                    const numA = cumulativeSnapshot[a]?.val !== undefined ? parseLabValue(cumulativeSnapshot[a].val).numeric : NaN;
-                    const numB = cumulativeSnapshot[b]?.val !== undefined ? parseLabValue(cumulativeSnapshot[b].val).numeric : NaN;
+                    const numA = parseLabValue(cumulativeSnapshot[a].val).numeric;
+                    const numB = parseLabValue(cumulativeSnapshot[b].val).numeric;
                     return dir * ((Number.isFinite(numA) ? numA : -Infinity) - (Number.isFinite(numB) ? numB : -Infinity)) || dir * a.localeCompare(b);
                   }
                   if (biomarkersTableSort.by === "range") {
-                    const statusA = cumulativeSnapshot[a]?.val !== undefined ? getStatus(a, cumulativeSnapshot[a].val) : "unknown";
-                    const statusB = cumulativeSnapshot[b]?.val !== undefined ? getStatus(b, cumulativeSnapshot[b].val) : "unknown";
+                    const statusA = getStatus(a, cumulativeSnapshot[a].val);
+                    const statusB = getStatus(b, cumulativeSnapshot[b].val);
                     const rankA = STATUS_SORT_ORDER[statusA] ?? 6;
                     const rankB = STATUS_SORT_ORDER[statusB] ?? 6;
                     return dir * (rankA - rankB || a.localeCompare(b));
@@ -3480,6 +3924,289 @@ export default function App() {
         </main>
       </div>
 
+      {/* ── CHAT ── */}
+      {!showChatPanel && (
+        <button
+          type="button"
+          onClick={() => setShowChatPanel(true)}
+          style={{
+            position: "fixed",
+            bottom: isMobile ? 20 : 24,
+            right: isMobile ? 16 : 24,
+            width: isMobile ? 56 : 52,
+            height: isMobile ? 56 : 52,
+            borderRadius: isMobile ? 28 : 26,
+            border: `2px solid ${themeColors.accent}`,
+            background: themeColors.appBg,
+            color: themeColors.accent,
+            fontSize: isMobile ? 26 : 22,
+            cursor: "pointer",
+            boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          title="AI Chat"
+          aria-label="Open AI Chat"
+        >
+          💬
+        </button>
+      )}
+      {showChatPanel && (() => {
+        const activeMessages = chatConversations.find((c) => c.id === activeChatId)?.messages ?? [];
+        const startNewChat = () => {
+          const newId = Date.now();
+          setChatConversations((prev) => [...prev, { id: newId, messages: [] }]);
+          setActiveChatId(newId);
+        };
+        const closeChatTab = (id) => {
+          setChatConversations((prev) => {
+            const next = prev.filter((c) => c.id !== id);
+            if (next.length === 0) {
+              const newId = Date.now();
+              setActiveChatId(newId);
+              return [{ id: newId, messages: [] }];
+            }
+            if (activeChatId === id) setActiveChatId(next[0].id);
+            return next;
+          });
+        };
+        const speakReply = (content, msgId) => {
+          if (chatPlayingId !== null) {
+            window.speechSynthesis?.cancel();
+            if (chatPlayingId === msgId) {
+              setChatPlayingId(null);
+              return;
+            }
+          }
+          const u = new SpeechSynthesisUtterance(content);
+          const voices = window.speechSynthesis?.getVoices?.() ?? [];
+          const preferred = ["Google", "Microsoft", "Samantha", "Karen", "Daniel", "Natural", "Premium", "Zira", "David"];
+          const enVoice = voices.find((v) => (v.lang?.startsWith("en") || v.lang === "en-US") && preferred.some((p) => (v.name || "").includes(p)))
+            || voices.find((v) => v.lang === "en-US" || v.lang?.startsWith("en-"))
+            || voices[0];
+          if (enVoice) u.voice = enVoice;
+          u.rate = 0.98;
+          u.pitch = 1;
+          u.onend = () => setChatPlayingId(null);
+          window.speechSynthesis?.speak(u);
+          setChatPlayingId(msgId);
+        };
+        const handleTitleMouseDown = (e) => {
+          if (e.button === 0) chatDragStart.current = { startX: e.clientX, startY: e.clientY };
+        };
+        const handleResizeMouseDown = (e) => {
+          if (e.button === 0) chatResizeStart.current = { startW: chatWindowRect.w, startH: chatWindowRect.h, startX: e.clientX, startY: e.clientY };
+        };
+        const { x, y, w, h } = chatWindowRect;
+        const isMin = chatMinimized;
+        const CHAT_FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+        return (
+        <div
+          style={{
+            position: "fixed",
+            left: x,
+            top: y,
+            width: w,
+            height: isMin ? 44 : h,
+            minWidth: isMin ? 280 : 480,
+            minHeight: isMin ? 44 : 280,
+            maxWidth: window.innerWidth - 20,
+            maxHeight: window.innerHeight - 40,
+            background: theme === "dark" ? "#0a1628" : "#fff",
+            border: `1px solid ${themeColors.border}`,
+            borderRadius: 12,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
+            zIndex: 60,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            onMouseDown={handleTitleMouseDown}
+            onClick={() => { if (isMin) setChatMinimized(false); }}
+            style={{
+              padding: "10px 12px",
+              borderBottom: isMin ? "none" : `1px solid ${themeColors.border}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexShrink: 0,
+              cursor: isMin ? "pointer" : "move",
+              userSelect: "none",
+              background: theme === "dark" ? "#0d1f3c" : "#f5f7fa",
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 600, color: themeColors.text, fontFamily: CHAT_FONT }}>AI Chat</span>
+            <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 4, overflowX: "auto" }}>
+              {chatConversations.map((c, idx) => (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0, background: c.id === activeChatId ? `${themeColors.accent}22` : "transparent", border: `1px solid ${c.id === activeChatId ? themeColors.accent : themeColors.border}`, borderRadius: 6, padding: "2px 6px" }}>
+                  <button type="button" onClick={(ev) => { ev.stopPropagation(); setActiveChatId(c.id); }} style={{ padding: "2px 6px", fontSize: 11, border: "none", background: "transparent", color: themeColors.text, cursor: "pointer", whiteSpace: "nowrap", fontFamily: CHAT_FONT }}>Chat {idx + 1}</button>
+                  <button type="button" onClick={(ev) => { ev.stopPropagation(); closeChatTab(c.id); }} style={{ padding: "0 2px", fontSize: 12, border: "none", background: "transparent", color: themeColors.textDim, cursor: "pointer", lineHeight: 1, fontFamily: CHAT_FONT }} aria-label="Close conversation">×</button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={(ev) => { ev.stopPropagation(); startNewChat(); }} style={{ padding: "4px 8px", fontSize: 11, border: `1px solid ${themeColors.border}`, background: "transparent", color: themeColors.textDim, cursor: "pointer", borderRadius: 6, fontFamily: CHAT_FONT }} title="New conversation">New</button>
+            <button type="button" onClick={(ev) => { ev.stopPropagation(); setChatMinimized((m) => !m); }} style={{ padding: "4px 8px", fontSize: 12, border: "none", background: "transparent", color: themeColors.textDim, cursor: "pointer", fontFamily: CHAT_FONT }} title={isMin ? "Expand" : "Minimize"}>{isMin ? "▢" : "−"}</button>
+            <button type="button" onClick={(ev) => { ev.stopPropagation(); setShowChatPanel(false); }} style={{ padding: "4px 8px", fontSize: 12, border: "none", background: "transparent", color: themeColors.textDim, cursor: "pointer", fontFamily: CHAT_FONT }} title="Close">✕</button>
+          </div>
+          {!isMin && (
+            <>
+              {!currentPerson && (
+                <div style={{ padding: 10, fontSize: 12, color: themeColors.textDim, fontFamily: CHAT_FONT }}>Select a person to use @all, @all_wtrends, @norecord, @Liver, @Lipids_wtrends, @biomarker, @biomarker_wtrend.</div>
+              )}
+              <div style={{ flex: 1, overflowY: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8, minHeight: 0, minWidth: 0 }}>
+                {activeMessages.length === 0 && (
+                  <div style={{ fontSize: 15, lineHeight: 1.6, color: themeColors.textDim, fontFamily: CHAT_FONT, wordBreak: "break-word", overflowWrap: "break-word" }}>Ask anything. Use @all or @all_wtrends for all biomarkers; @norecord for markers with no data; @Liver, @Lipids_wtrends for panel groups; @biomarker or @biomarker_wtrend for one marker.</div>
+                )}
+                {activeMessages.map((msg, i) => (
+                  <div key={i} style={{ alignSelf: msg.role === "user" ? "flex-end" : "flex-start", maxWidth: "90%", padding: "12px 16px", borderRadius: 12, background: msg.role === "user" ? `${themeColors.accent}22` : `${themeColors.border}33`, border: `1px solid ${msg.role === "user" ? themeColors.accent : themeColors.border}`, fontSize: 15, lineHeight: 1.6, wordBreak: "break-word", fontFamily: CHAT_FONT }}>
+                    {msg.role === "user" ? (
+                      <span style={{ whiteSpace: "pre-wrap" }}>{msg.displayContent ?? msg.content}</span>
+                    ) : (
+                      <>
+                        <div style={{ lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: formatChatReply(msg.content) }} />
+                        <button type="button" onClick={() => speakReply(msg.content, `ai-${i}`)} style={{ marginTop: 8, padding: "6px 10px", fontSize: 12, border: `1px solid ${themeColors.border}`, background: "transparent", color: themeColors.textDim, cursor: "pointer", borderRadius: 6, fontFamily: CHAT_FONT }} title="Play">{chatPlayingId === `ai-${i}` ? "⏹ Stop" : "▶ Play"}</button>
+                      </>
+                    )}
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div style={{ alignSelf: "flex-start", padding: "8px 12px", fontSize: 14, color: themeColors.textDim, fontFamily: CHAT_FONT }}>
+                    {chatWaitSeconds != null
+                      ? `Rate limited. Retrying in ${chatWaitSeconds}s…`
+                      : chatProvider === "groq-compound"
+                        ? "Groq Compound: can take 1–2 min when visiting links…"
+                        : "…"}
+                  </div>
+                )}
+              </div>
+              <div style={{ padding: 10, borderTop: `1px solid ${themeColors.border}`, flexShrink: 0, position: "relative" }}>
+                {chatAttachedFiles.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                    {chatAttachedFiles.map((f, i) => (
+                      <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", background: `${themeColors.border}33`, borderRadius: 6, fontSize: 11, fontFamily: CHAT_FONT }}>
+                        {f.name}
+                        <button type="button" onClick={() => setChatAttachedFiles((prev) => prev.filter((_, j) => j !== i))} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, fontSize: 12, color: themeColors.textDim, fontFamily: CHAT_FONT }} aria-label="Remove file">×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {chatAtOpen && chatAtFiltered.length > 0 && (
+                  <div
+                    ref={chatAtListRef}
+                    style={{
+                      position: "absolute",
+                      bottom: "100%",
+                      left: 10,
+                      right: 10,
+                      marginBottom: 4,
+                      maxHeight: 200,
+                      overflowY: "auto",
+                      background: theme === "dark" ? "#0d1f3c" : "#f0f4f8",
+                      border: `1px solid ${themeColors.border}`,
+                      borderRadius: 8,
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                      zIndex: 70,
+                    }}
+                  >
+                    {chatAtFiltered.map((s, i) => (
+                      <button
+                        key={s}
+                        type="button"
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 10px",
+                          textAlign: "left",
+                          fontSize: 11,
+                          border: "none",
+                          background: i === chatAtIndex ? `${themeColors.accent}33` : "transparent",
+                          color: themeColors.text,
+                          cursor: "pointer",
+                          fontFamily: CHAT_FONT,
+                        }}
+                        onMouseDown={(e) => { e.preventDefault(); applyChatAtSuggestion(s); }}
+                        onMouseEnter={() => setChatAtIndex(i)}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 8, border: `1px solid ${themeColors.border}`, borderRadius: 10, padding: "8px 10px", background: theme === "dark" ? "#0d1f3c" : "#f8fafc", fontFamily: CHAT_FONT }}>
+                  <input
+                    type="file"
+                    id="chat-file-attach"
+                    multiple
+                    accept="*/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      setChatAttachedFiles((prev) => [...prev, ...files]);
+                      e.target.value = "";
+                    }}
+                  />
+                  <label htmlFor="chat-file-attach" style={{ flexShrink: 0, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: themeColors.textDim, border: "none", background: "transparent", borderRadius: 8, fontFamily: CHAT_FONT }} title="Attach files">
+                    <span style={{ fontSize: 18 }}>+</span>
+                  </label>
+                  <textarea
+                    ref={chatInputRef}
+                    value={chatInput}
+                    onChange={(e) => {
+                      handleChatInputChange(e);
+                      const el = e.target;
+                      el.style.height = "auto";
+                      el.style.height = Math.min(el.scrollHeight, 240) + "px";
+                    }}
+                    onKeyDown={handleChatKeyDown}
+                    placeholder="Ask AI… (type @ for autocomplete)"
+                    rows={1}
+                    style={{
+                      flex: 1,
+                      minHeight: 40,
+                      minWidth: 200,
+                      maxHeight: 240,
+                      resize: "none",
+                      border: "none",
+                      background: "transparent",
+                      outline: "none",
+                      fontSize: 14,
+                      fontFamily: CHAT_FONT,
+                      color: themeColors.text,
+                      lineHeight: 1.4,
+                    }}
+                  />
+                  <select value={chatProvider} onChange={(e) => setChatProvider(e.target.value)} style={{ flexShrink: 0, padding: "4px 6px", fontSize: 13, alignSelf: "center", maxWidth: 140, fontFamily: CHAT_FONT }}>
+                    {Object.entries(AI_PROVIDERS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                  </select>
+                  <button type="button" className="btn btn-primary" onClick={sendChatMessage} disabled={chatLoading || !chatInput.trim()} style={{ padding: "8px 14px", fontSize: 12, fontFamily: CHAT_FONT }}>Send</button>
+                </div>
+              </div>
+            </>
+          )}
+          {!isMin && (
+            <div
+              onMouseDown={handleResizeMouseDown}
+              style={{
+                position: "absolute",
+                right: 0,
+                bottom: 0,
+                width: 16,
+                height: 16,
+                cursor: "nwse-resize",
+                background: `linear-gradient(135deg, transparent 50%, ${themeColors.border} 50%)`,
+                backgroundSize: "8px 8px",
+              }}
+              title="Resize"
+            />
+          )}
+        </div>
+        );
+      })()}
+
       {/* ── MODALS ── */}
       {showImportModal && importTargetPersonId != null && <ImportModal onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish) => { addEntry(importTargetPersonId, date, biomarkers, extractedName, extractedNameEnglish); setShowImportModal(false); setImportTargetPersonId(null); }} personName={people.find(p => p.id === importTargetPersonId)?.name} />}
       {showManualEntry && <ManualEntryModal onClose={() => setShowManualEntry(false)} onSave={(date, biomarkers) => { addEntry(selectedPerson, date, biomarkers); setShowManualEntry(false); }} person={currentPerson} />}
@@ -3770,8 +4497,8 @@ function TrendDetail({ name, personEntries, onBack, themeColors }) {
 }
 
 // ─── IMPORT MODAL ─────────────────────────────────────────────────────────────
-const AI_PROVIDERS = { gemini: "Gemini", anthropic: "Claude", openai: "OpenAI", groq: "Groq" };
-const AI_PROVIDER_FREE_TIER = { gemini: true, anthropic: true, openai: false, groq: true };
+const AI_PROVIDERS = { gemini: "Gemini", anthropic: "Claude", openai: "OpenAI", groq: "Groq", "groq-compound": "Groq (Compound)", ollama: "Llama (local)" };
+const AI_PROVIDER_FREE_TIER = { gemini: true, anthropic: true, openai: false, groq: true, ollama: true };
 
 /** Cyrillic → Latin transliteration (Unicode code points to avoid encoding issues). Russian/Ukrainian. */
 const CYRILLIC_TO_LATIN = {
@@ -3858,7 +4585,7 @@ function ImportModal({ onClose, onImport, personName }) {
   const [importStatus, setImportStatus] = useState("");
   const [importElapsed, setImportElapsed] = useState(0);
   const [editedBiomarkers, setEditedBiomarkers] = useState({});
-  const [aiProvider, setAiProvider] = useState("gemini"); // "gemini" | "anthropic" | "openai" | "groq"
+  const [aiProvider, setAiProvider] = useState("groq"); // "gemini" | "anthropic" | "openai" | "groq"
   const fileRef = useRef();
 
   useEffect(() => {
@@ -3950,7 +4677,7 @@ function ImportModal({ onClose, onImport, personName }) {
     const timeoutId = setTimeout(() => aborter.abort(), IMPORT_TIMEOUT_MS);
     try {
       const b64 = await toBase64(f);
-      const providerName = aiProvider === "anthropic" ? "Claude" : aiProvider === "openai" ? "OpenAI" : aiProvider === "groq" ? "Groq" : "Gemini";
+      const providerName = aiProvider === "anthropic" ? "Claude" : aiProvider === "openai" ? "OpenAI" : aiProvider === "groq" ? "Groq" : aiProvider === "ollama" ? "Llama (local)" : "Gemini";
       setImportStatus(`Sending document to ${providerName}…`);
       const targetUnits = Object.fromEntries(Object.entries(BIOMARKER_DB).map(([k, v]) => [k, v.unit]));
 
@@ -4320,6 +5047,49 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
         setImportStatus("Parsing results…");
         const clean = groqText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
         parsed = parseGeminiJson(clean);
+      } else if (aiProvider === "ollama") {
+        const ollamaBase = (import.meta.env.VITE_OLLAMA_BASE_URL || "").trim() || (isDev ? "/api/ollama" : "http://localhost:11434");
+        const ollamaModel = (import.meta.env.VITE_OLLAMA_VISION_MODEL || import.meta.env.VITE_OLLAMA_MODEL || "llava").trim();
+        let imageUrls;
+        if (isPdf(f)) {
+          setImportStatus("Converting PDF to images…");
+          try {
+            imageUrls = (await pdfToImages(b64, 5)).slice(0, 5);
+          } catch (e) {
+            throw new Error("Failed to convert PDF to images: " + (e?.message || String(e)));
+          }
+          if (!imageUrls?.length) throw new Error("PDF had no renderable pages.");
+        } else {
+          const imageMime = f.type || (f.name && f.name.toLowerCase().endsWith(".webp") ? "image/webp" : f.name && f.name.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+          imageUrls = [`data:${imageMime};base64,${b64}`];
+        }
+        const contentParts = imageUrls.map((url) => ({ type: "image_url", image_url: { url } }));
+        contentParts.push({ type: "text", text: prompt });
+        setImportStatus("Waiting for Llama response…");
+        const ollamaRes = await fetch(`${ollamaBase}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: ollamaModel,
+            messages: [{ role: "user", content: contentParts }],
+            max_tokens: 2000,
+            stream: false,
+          }),
+          signal: aborter.signal,
+        });
+        if (!ollamaRes.ok) {
+          const errText = await ollamaRes.text();
+          if (ollamaRes.status === 404 || /not found|unknown model/i.test(errText)) {
+            throw new Error(`Ollama vision model "${ollamaModel}" not found. Run: ollama pull ${ollamaModel} (use a vision model, e.g. llava or llama3.2-vision).`);
+          }
+          throw new Error(`Ollama ${ollamaRes.status}: ${(errText || String(ollamaRes.status)).slice(0, 300)}`);
+        }
+        const ollamaData = await ollamaRes.json();
+        const ollamaText = ollamaData?.choices?.[0]?.message?.content ?? "";
+        if (!ollamaText.trim()) throw new Error("Llama returned no text; try another file or ensure the model supports images.");
+        setImportStatus("Parsing results…");
+        const clean = ollamaText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+        parsed = parseGeminiJson(clean);
       } else {
         const geminiModel = "gemini-2.5-flash";
         const apiBase = isDev ? "/api/gemini" : "https://generativelanguage.googleapis.com";
@@ -4366,7 +5136,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
 
       if (!parsed) {
         throw new Error(
-          (aiProvider === "anthropic" ? "Claude" : aiProvider === "openai" ? "OpenAI" : aiProvider === "groq" ? "Groq" : "Gemini") + " returned invalid or truncated JSON. Try again or use a shorter/simpler document."
+          (aiProvider === "anthropic" ? "Claude" : aiProvider === "openai" ? "OpenAI" : aiProvider === "groq" ? "Groq" : aiProvider === "ollama" ? "Llama" : "Gemini") + " returned invalid or truncated JSON. Try again or use a shorter/simpler document."
         );
       }
       setResult(parsed);
@@ -4378,7 +5148,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
       setStage("review");
     } catch (e) {
       if (e.name === "AbortError") {
-        setError("Request timed out after 8 minutes. Try a smaller file or switch to Gemini.");
+        setError("Request timed out after 8 minutes. Try a smaller file or another provider.");
       } else {
         setError("Failed to process file: " + e.message);
       }
@@ -4403,7 +5173,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: "#ddf", fontFamily: "Space Grotesk, sans-serif" }}>📄 Import Bloodwork (PDF or Image)</div>
-            <div style={{ fontSize: 12, color: "#4a6a8a", marginBottom: 8 }}>Gemini · Claude · Groq free tier; OpenAI requires billing. · EN / NO / RU / HY</div>
+            <div style={{ fontSize: 12, color: "#4a6a8a", marginBottom: 8 }}>Gemini · Claude · Groq · Llama (local) free tier; OpenAI requires billing. · EN / NO / RU / HY</div>
             <div style={{ display: "flex", gap: 6 }}>
               {(Object.keys(AI_PROVIDERS)).map((key) => (
                 <button

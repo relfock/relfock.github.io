@@ -34,6 +34,10 @@ export default defineConfig(({ mode }) => {
           target: "http://localhost:3001",
           changeOrigin: true,
         },
+        "/api/fetch-url": {
+          target: "http://localhost:3001",
+          changeOrigin: true,
+        },
         "/api/gemini": {
           target: "https://generativelanguage.googleapis.com",
           changeOrigin: true,
@@ -78,6 +82,12 @@ export default defineConfig(({ mode }) => {
               if (groqKey) proxyReq.setHeader("Authorization", `Bearer ${groqKey}`);
             });
           },
+        },
+        "/api/ollama": {
+          target: "http://localhost:11434",
+          changeOrigin: true,
+          proxyTimeout: 120000,
+          rewrite: (path) => path.replace(/^\/api\/ollama/, ""),
         },
       },
     },
