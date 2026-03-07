@@ -2000,6 +2000,49 @@ const RANGE_RGB = {
 
 // Blueprint Biomarkers (blueprintbiomarkers.com) suggested retest frequency
 const MONITOR_FREQUENCY_LABELS = { "3mo": "Retest every 3 mo", "6mo": "Retest every 6 mo", "1y": "Retest yearly" };
+
+// Map common lab abbreviations to canonical BIOMARKER_DB keys (used after AI extraction)
+const WBC_DIFF_IMPORT_ALIASES = {
+  "NEUT%": "Neutrophils", NEUT: "Neutrophils",
+  "LYMPH%": "Lymphocytes", LYMPH: "Lymphocytes",
+  "MONO%": "Monocytes", MONO: "Monocytes",
+  "EO%": "Eosinophils", EO: "Eosinophils",
+  "BASO%": "Basophils", BASO: "Basophils",
+  "IG%": "Band Neutrophils", IG: "Band Neutrophils",
+  "Immature Granulocytes": "Band Neutrophils",
+  "NEUT#": "Neutrophils (Absolute)", "LYMPH#": "Lymphocytes (Absolute)", "MONO#": "Monocytes (Absolute)", "EO#": "Eosinophils (Absolute)", "BASO#": "Basophils (Absolute)",
+};
+const BIOCHEM_IMPORT_ALIASES = {
+  "GLUC": "Fasting Glucose", "GLU": "Fasting Glucose",
+  "BIL-T": "Bilirubin, Total", "BIL-Total": "Bilirubin, Total",
+};
+const ALL_IMPORT_ALIASES = { ...WBC_DIFF_IMPORT_ALIASES, ...BIOCHEM_IMPORT_ALIASES };
+function normalizeExtractedBiomarkerKeys(parsed) {
+  if (!parsed || typeof parsed.extracted !== "object") return;
+  const ext = parsed.extracted;
+  const out = {};
+  const aliasKeys = Object.keys(ALL_IMPORT_ALIASES);
+  for (const [key, val] of Object.entries(ext)) {
+    const k = (key || "").trim();
+    if (!k) continue;
+    if (BIOMARKER_DB[k]) {
+      out[k] = val;
+      continue;
+    }
+    let canonical = ALL_IMPORT_ALIASES[k] || ALL_IMPORT_ALIASES[k.replace(/\s+/g, " ")];
+    if (!canonical) {
+      const match = aliasKeys.find((ak) => ak.toUpperCase() === k.toUpperCase());
+      if (match) canonical = ALL_IMPORT_ALIASES[match];
+    }
+    if (canonical && out[canonical] === undefined) {
+      out[canonical] = val;
+    } else if (!canonical) {
+      out[k] = val;
+    }
+  }
+  parsed.extracted = out;
+}
+
 function MonitorFrequencyBadge({ frequency, themeColors }) {
   if (!frequency || !MONITOR_FREQUENCY_LABELS[frequency]) return null;
   const label = MONITOR_FREQUENCY_LABELS[frequency];
@@ -2228,6 +2271,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [viewOriginalFile, setViewOriginalFile] = useState(null);
   const [statusFilter, setStatusFilter] = useState(null);
   const [confirmDeletePerson, setConfirmDeletePerson] = useState(null); // person id pending deletion
   const [personDropdownOpen, setPersonDropdownOpen] = useState(false);
@@ -2399,10 +2443,10 @@ export default function App() {
   };
 
 
-  const addEntry = (personId, date, biomarkers, extractedName = null, extractedNameEnglish = null) => {
+  const addEntry = (personId, date, biomarkers, extractedName = null, extractedNameEnglish = null, importedFile = null) => {
     const newEntries = {
       ...entries,
-      [personId]: [...(entries[personId] || []), { date, biomarkers, id: Date.now(), extractedName: extractedName || undefined, extractedNameEnglish: extractedNameEnglish || undefined }]
+      [personId]: [...(entries[personId] || []), { date, biomarkers, id: Date.now(), extractedName: extractedName || undefined, extractedNameEnglish: extractedNameEnglish || undefined, importedFile: importedFile || undefined }]
         .sort((a, b) => new Date(a.date) - new Date(b.date)),
     };
     setEntries(newEntries);
@@ -2636,13 +2680,14 @@ export default function App() {
     const addBiomarkerLine = (key, withTrend) => {
       const meta = BIOMARKER_DB[key];
       const unit = meta?.unit ?? "";
+      const freq = meta?.monitorFrequency ?? "6mo";
       const snap = snapshot[key];
       if (!snap) {
-        lines.push(`${key}: no data`);
+        lines.push(`${key}: no data (recommended check: every ${freq})`);
         return;
       }
       const status = getStatus(key, snap.val);
-      lines.push(`${key}: ${snap.val} ${unit} (as of ${snap.date}) — ${status}`);
+      lines.push(`${key}: ${snap.val} ${unit} (as of ${snap.date}) — ${status}; recheck every ${freq}`);
       if (withTrend && entriesList.length > 0) {
         const trendPoints = entriesList
           .map((e) => {
@@ -2713,7 +2758,13 @@ export default function App() {
     const hasNorecord = /\@norecord\b/.test(text);
     if (hasNorecord) {
       const noDataKeys = keysForPerson.filter((k) => !snapshot[k]);
-      if (noDataKeys.length > 0) lines.push(`Biomarkers with no data yet: ${noDataKeys.join(", ")}\n`);
+      if (noDataKeys.length > 0) {
+        const withFreq = noDataKeys.map((k) => {
+          const freq = BIOMARKER_DB[k]?.monitorFrequency ?? "6mo";
+          return `${k} (recheck every ${freq})`;
+        });
+        lines.push(`Biomarkers with no data yet: ${withFreq.join("; ")}\n`);
+      }
     }
     if (hasAll || hasAllWtrends) {
       const keysToShow = keysForPerson.filter((k) => snapshot[k]);
@@ -3817,11 +3868,22 @@ export default function App() {
                               {markerCount > 0 ? Math.round(optCount / markerCount * 100) : 0}%
                             </div>
                             {!isPendingDelete ? (
-                              <button
-                                className="btn btn-danger"
-                                style={{ padding: "6px 12px", fontSize: 11 }}
-                                onClick={() => setConfirmDeleteId(entry.id)}
-                              >🗑 Delete</button>
+                              <>
+                                {entry.importedFile && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    style={{ padding: "6px 12px", fontSize: 11 }}
+                                    onClick={() => setViewOriginalFile(entry.importedFile)}
+                                    title="View original imported file"
+                                  >📄 Original</button>
+                                )}
+                                <button
+                                  className="btn btn-danger"
+                                  style={{ padding: "6px 12px", fontSize: 11 }}
+                                  onClick={() => setConfirmDeleteId(entry.id)}
+                                >🗑 Delete</button>
+                              </>
                             ) : (
                               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                 <span style={{ fontSize: 12, color: "#ff8888" }}>Delete this entry?</span>
@@ -4208,7 +4270,7 @@ export default function App() {
       })()}
 
       {/* ── MODALS ── */}
-      {showImportModal && importTargetPersonId != null && <ImportModal onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish) => { addEntry(importTargetPersonId, date, biomarkers, extractedName, extractedNameEnglish); setShowImportModal(false); setImportTargetPersonId(null); }} personName={people.find(p => p.id === importTargetPersonId)?.name} />}
+      {showImportModal && importTargetPersonId != null && <ImportModal onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish, importedFile) => { addEntry(importTargetPersonId, date, biomarkers, extractedName, extractedNameEnglish, importedFile); setShowImportModal(false); setImportTargetPersonId(null); }} personName={people.find(p => p.id === importTargetPersonId)?.name} />}
       {showManualEntry && <ManualEntryModal onClose={() => setShowManualEntry(false)} onSave={(date, biomarkers) => { addEntry(selectedPerson, date, biomarkers); setShowManualEntry(false); }} person={currentPerson} />}
       {showAddPersonModal && <AddPersonModal onClose={() => setShowAddPersonModal(false)} onAdd={addPerson} />}
       {showEditPersonModal && currentPerson && (
@@ -4220,6 +4282,7 @@ export default function App() {
       )}
       {showInfoModal && <InfoModal name={showInfoModal} onClose={() => setShowInfoModal(null)} latestEntry={latestEntry} themeColors={themeColors} />}
       {showExportModal && <ExportModal onClose={() => setShowExportModal(false)} person={currentPerson} personEntries={personEntries} cumulativeSnapshot={cumulativeSnapshot} getBirthdayDisplay={getBirthdayDisplay} getAge={getAge} />}
+      {viewOriginalFile && <ViewOriginalModal file={viewOriginalFile} onClose={() => setViewOriginalFile(null)} themeColors={themeColors} />}
     </div>
   );
 }
@@ -4530,23 +4593,24 @@ function nameAndSurnameMatch(profileName, documentNameEnglish, documentNameAsOnD
     raw = raw.toLowerCase();
     if (!raw) return new Set();
     if (transliterate) raw = transliterateCyrillic(raw);
-    const words = raw.split(/[\s,]+/).map((w) => w.replace(/[^a-z]/g, "")).filter(Boolean);
+    const words = raw.split(/[\s,]+/).map((w) => w.replace(/[^a-z]/g, "")).filter((w) => w.length > 1);
     return new Set(words);
   };
   const a = nameParts(profile);
   if (a.size === 0) return true;
-  const check = (bSet, allowExtraPart = false) => {
+  const check = (bSet, allowExtraParts = 0) => {
     if (bSet.size === 0) return false;
     const profileInDoc = [...a].every((w) => bSet.has(w));
-    const sameOrOneExtra = allowExtraPart ? bSet.size <= a.size + 1 : a.size === bSet.size;
-    return profileInDoc && sameOrOneExtra;
+    const sizeOk = allowExtraParts === 0 ? a.size === bSet.size : bSet.size <= a.size + allowExtraParts;
+    return profileInDoc && sizeOk;
   };
+  const allowDocExtra = 2;
   if (docAs && /[\u0400-\u04ff]/.test(docAs)) {
-    if (check(nameParts(docAs, true), true)) return true;
+    if (check(nameParts(docAs, true), allowDocExtra)) return true;
   }
-  if (docEn && check(nameParts(docEn))) return true;
-  if (docEn && /[\u0400-\u04ff]/.test(docEn) && check(nameParts(docEn, true), true)) return true;
-  if (docAs && check(nameParts(docAs, true), true)) return true;
+  if (docEn && check(nameParts(docEn), allowDocExtra)) return true;
+  if (docEn && /[\u0400-\u04ff]/.test(docEn) && check(nameParts(docEn, true), allowDocExtra)) return true;
+  if (docAs && check(nameParts(docAs, true), allowDocExtra)) return true;
   if (!docEn && !docAs) return true;
   return false;
 }
@@ -4686,6 +4750,10 @@ function ImportModal({ onClose, onImport, personName }) {
 The input is a document (PDF or image such as a photo/scan of a lab report). Extract every biomarker you can find from the text or visible content.
 The report may be in Norwegian, Russian, Armenian, or English.
 
+BIOCHEMICAL PANEL (Cobas / Կենսաքիմիական): When the document is a biochemical analysis table, extract: GLUC or Գլյուկոզա → Fasting Glucose (mmol/L → mg/dL: ×18.016); BIL-T or Ընդհանուր բիլիռուբին → Bilirubin, Total (μmol/L → mg/dL: ÷17.1); GGT or y-գլյուտամիլտրանսպեպտիդազ → GGT (U/L); ALP or Հիմնային ֆոսֆատազ → Alkaline Phosphatase (U/L). Do not skip these when the table has "Biochemical analysis" or "Կենսաքիմիական հետազոտություններ".
+
+CRITICAL — CBC / WBC DIFFERENTIAL: Extract BOTH forms when the report shows both. (1) PERCENTAGE: when you see NEUT%, LYMPH%, MONO%, EO%, BASO% (or Armenian/other labels), add Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils with the numeric % value. (2) ABSOLUTE COUNTS: when you see absolute counts in 10⁹/L or ×10⁹/L or K/μL (e.g. NEUT#, LYMPH#, or a separate column for absolute values), add Neutrophils (Absolute), Lymphocytes (Absolute), Monocytes (Absolute), Eosinophils (Absolute), Basophils (Absolute) with that numeric value. Many reports (e.g. Sysmex) have both % and absolute — extract BOTH. If only one form is present, extract that one.
+
 PATIENT NAME — the ONLY valid source is the field labeled "Patient" or "Բուժառու" or "Name":
 - Locate the line where one of these words appears as a label (usually near the top, before date of birth).
 - extractedPersonName = the exact text that comes AFTER that label on the same line (or the next line). Copy character-for-character. Same order, same case.
@@ -4756,7 +4824,8 @@ MCV: fL target; Mean Corpuscular Volume (usually already correct)
 MCH: pg target; Mean Corpuscular Hemoglobin (usually already correct)
 MCHC: g/dL target (usually already correct)
 MPV: fL target; Mean Platelet Volume (usually already correct)
-Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils: % target when report gives percentage. When the report gives WBC differential as ABSOLUTE counts (unit 10⁹/L or ×10⁹/L or K/μL — numeric same as 10⁹/L), extract instead to Neutrophils (Absolute), Lymphocytes (Absolute), Monocytes (Absolute), Eosinophils (Absolute), Basophils (Absolute) with value in 10⁹/L. Do not duplicate: if absolute counts are given, use the (Absolute) keys; if only % given, use the percentage keys.
+WBC differential (CBC) — CRITICAL: Extract percentage values when the report shows them (unit %). Lab abbreviations and names to output keys: NEUT% or NEUT or Նեյտրոֆիլների → Neutrophils; LYMPH% or LYMPH or Լիմֆոցիտների → Lymphocytes; MONO% or MONO or Մոնոցիտների → Monocytes; EO% or EO or էոզինոֆիլների → Eosinophils; BASO% or BASO or Բազոֆիլների → Basophils; IG% or IG or Ոչ հասուն գրանուլոցիտների (immature granulocytes) → Band Neutrophils. Unit is %; use the numeric value as-is. Output exact keys: Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils, Band Neutrophils.
+Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils: % target when report gives percentage. Neutrophils (Absolute), Lymphocytes (Absolute), Monocytes (Absolute), Eosinophils (Absolute), Basophils (Absolute): 10⁹/L target when report gives absolute counts (column/row in 10⁹/L or ×10⁹/L or K/μL). When the report has BOTH percentage and absolute for the same cell type, output BOTH the percentage key and the (Absolute) key. Do not omit absolute counts when they are present.
 Total Protein: g/dL target; g/L → g/dL: ÷ 10
 Albumin: g/dL target; g/L → g/dL: ÷ 10
 Globulin: g/dL target; often computed as Total Protein − Albumin
@@ -4802,18 +4871,20 @@ Cholesterol/HDL Ratio: ratio; compute as Total Cholesterol ÷ HDL Cholesterol if
 ApoB/ApoA-1 Ratio: ratio; compute as ApoB ÷ ApoA-1 when both are reported (do not report if only one is present)
 Albumin/Globulin Ratio: ratio; compute as Albumin ÷ Globulin if not reported
 Iron Saturation: % target; compute as (Iron ÷ TIBC)×100 if not reported (Iron % Saturation)
-Recognise aliases: Holotranscobalamin = Active B12, holoTC = Active B12, Vitamin B12 (total) = Total B12, Glucose (fasting) = Fasting Glucose, CRP (hs) = hs-CRP, GGT = Gamma Glutamyl Transferase, eGFR = eGFR (estimated GFR). Apo A-1 = ApoA-1, Apolipoprotein A1 = ApoA-1. Norwegian: Bilirubin or Total bilirubin → output key exactly "Bilirubin, Total" (comma included). Blueprint names: Non Hdl Cholesterol = Non-HDL Cholesterol, Protein (Urine) = Urine Protein, White Blood Cell Count = WBC, Red Blood Cell Count = RBC, Platelet Count = Platelets, Triiodothyronine (T3 Free) = Free T3, Thyroxine (T4 Free) = Free T4, Thyroid Stimulating Hormone = TSH, Testosterone Total = Total Testosterone, Testosterone Free = Free Testosterone, Urea Nitrogen (Bun) = BUN, Estimated Glomerular Filtration Rate = eGFR, Hemoglobin A1C = HbA1c, High-Sensitivity C-Reactive Protein = hs-CRP, Sex Hormone Binding Globulin = SHBG, Dhea Sulfate = DHEA-S, Iron Binding Capacity = TIBC, Iron % Saturation = Iron Saturation, Ldl Particle Number = LDL Particle Number, Chol/Hdlc Ratio = Cholesterol/HDL Ratio, Albumin/Globulin Ratio = Albumin/Globulin Ratio.
+Recognise aliases: GLUC = Fasting Glucose, GLU = Fasting Glucose, Glucose = Fasting Glucose. BIL-T = Bilirubin, Total (output key exactly "Bilirubin, Total"). GGT = GGT, ALP = Alkaline Phosphatase. Holotranscobalamin = Active B12, holoTC = Active B12, Vitamin B12 (total) = Total B12, Glucose (fasting) = Fasting Glucose, CRP (hs) = hs-CRP, GGT = Gamma Glutamyl Transferase, eGFR = eGFR (estimated GFR). Apo A-1 = ApoA-1, Apolipoprotein A1 = ApoA-1. CBC differential: NEUT% = Neutrophils, LYMPH% = Lymphocytes, MONO% = Monocytes, EO% = Eosinophils, BASO% = Basophils, IG% = Band Neutrophils. Norwegian: Bilirubin or Total bilirubin → output key exactly "Bilirubin, Total" (comma included). Blueprint names: Non Hdl Cholesterol = Non-HDL Cholesterol, Protein (Urine) = Urine Protein, White Blood Cell Count = WBC, Red Blood Cell Count = RBC, Platelet Count = Platelets, Triiodothyronine (T3 Free) = Free T3, Thyroxine (T4 Free) = Free T4, Thyroid Stimulating Hormone = TSH, Testosterone Total = Total Testosterone, Testosterone Free = Free Testosterone, Urea Nitrogen (Bun) = BUN, Estimated Glomerular Filtration Rate = eGFR, Hemoglobin A1C = HbA1c, High-Sensitivity C-Reactive Protein = hs-CRP, Sex Hormone Binding Globulin = SHBG, Dhea Sulfate = DHEA-S, Iron Binding Capacity = TIBC, Iron % Saturation = Iron Saturation, Ldl Particle Number = LDL Particle Number, Chol/Hdlc Ratio = Cholesterol/HDL Ratio, Albumin/Globulin Ratio = Albumin/Globulin Ratio.
 
 LANGUAGE MAPPING (use EXACT English key in extracted output):
 Norwegian: Kreatinin=Creatinine, Glukose=Fasting Glucose, Fasting glukose=Fasting Glucose, Kolesterol=Total Cholesterol, Total kolesterol=Total Cholesterol, LDL-kolesterol=LDL Cholesterol, LDL kolesterol=LDL Cholesterol, HDL-kolesterol=HDL Cholesterol, HDL kolesterol=HDL Cholesterol, Triglyserider=Triglycerides, Tyreoideastimulerende hormon=TSH, TSH=TSH, Urinsyre=Uric Acid, Homocystein=Homocysteine, Oestradiol=Estradiol, Østradiol=Estradiol, E2=Estradiol, S-Østradiol-17beta=Estradiol, S-Oestradiol-17beta=Estradiol, Hemoglobin=Hemoglobin, Hb=Hemoglobin, Hematokrit=Hematocrit, Erytrocytter=RBC, Leukocytter=WBC, Hvite blodceller=WBC, Trombocytter=Platelets, Røde blodceller=RBC, Kreatinin (serum)=Creatinine, Ureum=BUN, Urea=BUN, eGFR=eGFR, Estimert GFR=eGFR, ASAT=AST, ALAT=ALT, Gamma-GT=GGT, GGT=GGT, Alkalisk fosfatase=Alkaline Phosphatase, ALP=Alkaline Phosphatase,  Sensitivt CRP=hs-CRP, CRP (sens)=hs-CRP, hs-CRP=hs-CRP, Fri T3=Free T3, fT3=Free T3, Triiodothyronin=Free T3, Fri T4=Free T4, fT4=Free T4, Thyroxin=Free T4, Testosteron=Total Testosterone, Fri testosteron=Free Testosterone, Prolaktin=Prolactin, Kortisol=Cortisol, DHEA-S=DHEA-S, SHBG=SHBG, Kobalamin=Total B12, Vitamin B12=Total B12, Holotranscobalamin=Active B12, Aktiv B12=Active B12, Folat=Folate, Vitamin D=Vitamin D, 25-OH-vitamin D=Vitamin D, 25-hydroxyvitamin D=Vitamin D, Jern=Iron, Ferritin=Ferritin, Total jernbindingskapasitet=TIBC, Jernbindingskapasitet=TIBC, Jernmetning=Iron Saturation, Magnesium=Magnesium, Zink=Zinc, Selen=Selenium, Kalsium=Calcium, S-Kalsium=Calcium, Natrium=Sodium, Kalium=Potassium, Klorid=Chloride, Fosfat=Phosphate, Kopper=Copper, Albumin=Albumin, Total protein=Total Protein, Globulin=Globulin, Cystatin C=Cystatin C, Urin albumin=Urine Albumin, Urin kreatinin=Urine Creatinine, Urin protein=Urine Protein, Protein (urin)=Urine Protein, Neutrofile=Neutrophils, Lymfocytter=Lymphocytes, Monocytter=Monocytes, Eosinofiler=Eosinophils, Basofiler=Basophils, Insulin=Fasting Insulin, Fasting insulin=Fasting Insulin, HbA1c=HbA1c, Glykemisk hemoglobin=HbA1c, TPO-antistoff=TPO Antibodies, Thyroglobulin-antistoff=Thyroglobulin Antibodies, Lipase=Lipase, Amylase=Amylase, Revmatoid faktor=Rheumatoid Factor, MMA=Methylmalonic Acid, Metylmalonsyre=Methylmalonic Acid, S-Kalsium korrigert=Corrected Calcium, S-CK=Creatine Kinase, S-Progesteron=Progesterone, Vitamin D3=Vitamin D, S-Vitamin D=Vitamin D, Fri Testosteron indeks=Free Testosterone Index
 Russian: Креатинин=Creatinine, Глюкоза=Fasting Glucose, Холестерин=Total Cholesterol, Триглицериды=Triglycerides, ТТГ=TSH, Мочевая кислота=Uric Acid, Гомоцистеин=Homocysteine, ЛПНП=LDL Cholesterol, ЛПВП=HDL Cholesterol, Гемоглобин=Hemoglobin, Ферритин=Ferritin, Эстрадиол=Estradiol
-Armenian: Կրեատինին=Creatinine, Գլյուկոզ=Fasting Glucose, Խոլեստerոլ=Total Cholesterol, Հեմoglobin=Hemoglobin
+Armenian: Կրեատինին=Creatinine, Գլյուկոզ=Fasting Glucose, Գլյուկոզա=Fasting Glucose, Խոլեստerոլ=Total Cholesterol, Հեմoglobin=Hemoglobin. Biochemical: Ընդհանուր բիլիռուբին → "Bilirubin, Total", y-գլյուտամիլտրանսպեպտիդազ=GGT, Հիմնային ֆոսֆատազ=Alkaline Phosphatase. CBC differential (Նեյտրոֆիլների=Neutrophils, Լիմֆոցիտների=Lymphocytes, Մոնոցիտների=Monocytes, էոզինոֆիլների=Eosinophils, Բազոֆիլների=Basophils, Ոչ հասուն գրանուլոցիտների=Band Neutrophils). ESR: էրիթրոցիտների նստեցման արագություն=ESR
 English: E2=Estradiol, Oestradiol=Estradiol, 17-beta estradiol=Estradiol
 
-Return ONLY valid JSON. No markdown, no explanation, no newlines inside any string. Keep "notes" and "conversions" very short (one short phrase each). Format:
-{"extracted":{"Exact Biomarker Name":"number_as_string",...},"conversions":{},"testDate":"YYYY-MM-DD or null","extractedPersonName":"Name exactly as on document or null","extractedPersonNameEnglish":"Same name in English, given name and family name only (no patronymic), or null","language":"en","notes":""}
+CHECKLIST — CBC: Extract percentage values as Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils (unit %). Also extract absolute counts when present (e.g. NEUT#, LYMPH# in 10⁹/L) as Neutrophils (Absolute), Lymphocytes (Absolute), etc. Do not skip absolute counts when the report includes them.
+
+Return ONLY valid JSON. No markdown, no explanation, no newlines inside any string. Keep "notes" and "conversions" very short (one short phrase each). When CBC differential % are present, include them in extracted. Example shape (include both % and absolute when report has both): {"extracted":{"Hemoglobin":"14.2","Neutrophils":"55","Lymphocytes":"35","Monocytes":"6","Eosinophils":"2","Basophils":"1","Neutrophils (Absolute)":"3.2","Lymphocytes (Absolute)":"2.1",...},"conversions":{},"testDate":"YYYY-MM-DD or null","extractedPersonName":null,"extractedPersonNameEnglish":null,"language":"en","notes":""}
 
 Critical rules:
+- CBC differential: If the report has percentage columns (NEUT%, LYMPH%, etc.), add Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils (value in %). If it also has absolute count columns (e.g. NEUT#, 10⁹/L), add Neutrophils (Absolute), Lymphocytes (Absolute), Monocytes (Absolute), Eosinophils (Absolute), Basophils (Absolute) (value in 10⁹/L). Extract both when both are present.
 - Patient name: extractedPersonName must be the exact text that follows the label "Patient" or "Բուժառու" or "Name" on the document. Do not use a name from a signature, stamp, "Signed by", doctor, clinic, or any other field — only the line that is explicitly the patient field. If unsure, use null.
 - URINE reports: Do not add Fasting Glucose, Creatinine (serum), Total Protein, Bilirubin, etc. from qualitative urine results (negative/normal/բացասական/նորմա). Only add urine-specific biomarkers (Specific Gravity (Urine), pH (Urine), Urine Protein, Urine Albumin, Urine Creatinine) when the report gives a numeric value.
 - For every biomarker: detect the unit as stated on the report (g/L, mmol/L, mg/dL, etc.) and convert to the target unit before adding to "extracted". Never assume the lab uses the target unit — e.g. Hemoglobin 144 g/L → 14.4 g/dL; glucose 5.5 mmol/L → 99 mg/dL.
@@ -5050,29 +5121,26 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
       } else if (aiProvider === "ollama") {
         const ollamaBase = (import.meta.env.VITE_OLLAMA_BASE_URL || "").trim() || (isDev ? "/api/ollama" : "http://localhost:11434");
         const ollamaModel = (import.meta.env.VITE_OLLAMA_VISION_MODEL || import.meta.env.VITE_OLLAMA_MODEL || "llava").trim();
-        let imageUrls;
+        let imagesBase64;
         if (isPdf(f)) {
           setImportStatus("Converting PDF to images…");
           try {
-            imageUrls = (await pdfToImages(b64, 5)).slice(0, 5);
+            const imageUrls = (await pdfToImages(b64, 3)).slice(0, 3);
+            imagesBase64 = imageUrls.map((dataUrl) => (dataUrl.indexOf(",") >= 0 ? dataUrl.split(",")[1] : dataUrl));
           } catch (e) {
             throw new Error("Failed to convert PDF to images: " + (e?.message || String(e)));
           }
-          if (!imageUrls?.length) throw new Error("PDF had no renderable pages.");
+          if (!imagesBase64?.length) throw new Error("PDF had no renderable pages.");
         } else {
-          const imageMime = f.type || (f.name && f.name.toLowerCase().endsWith(".webp") ? "image/webp" : f.name && f.name.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
-          imageUrls = [`data:${imageMime};base64,${b64}`];
+          imagesBase64 = [b64];
         }
-        const contentParts = imageUrls.map((url) => ({ type: "image_url", image_url: { url } }));
-        contentParts.push({ type: "text", text: prompt });
         setImportStatus("Waiting for Llama response…");
-        const ollamaRes = await fetch(`${ollamaBase}/v1/chat/completions`, {
+        const ollamaRes = await fetch(`${ollamaBase}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: ollamaModel,
-            messages: [{ role: "user", content: contentParts }],
-            max_tokens: 2000,
+            messages: [{ role: "user", content: prompt, images: imagesBase64 }],
             stream: false,
           }),
           signal: aborter.signal,
@@ -5080,13 +5148,13 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
         if (!ollamaRes.ok) {
           const errText = await ollamaRes.text();
           if (ollamaRes.status === 404 || /not found|unknown model/i.test(errText)) {
-            throw new Error(`Ollama vision model "${ollamaModel}" not found. Run: ollama pull ${ollamaModel} (use a vision model, e.g. llava or llama3.2-vision).`);
+            throw new Error(`Ollama vision model "${ollamaModel}" not found. Run: ollama pull ${ollamaModel} (use a vision model, e.g. llava or gemma3).`);
           }
           throw new Error(`Ollama ${ollamaRes.status}: ${(errText || String(ollamaRes.status)).slice(0, 300)}`);
         }
         const ollamaData = await ollamaRes.json();
-        const ollamaText = ollamaData?.choices?.[0]?.message?.content ?? "";
-        if (!ollamaText.trim()) throw new Error("Llama returned no text; try another file or ensure the model supports images.");
+        const ollamaText = ollamaData?.message?.content ?? "";
+        if (!ollamaText?.trim()) throw new Error("Llama returned no text; try another file or ensure the model supports images (e.g. llava, gemma3).");
         setImportStatus("Parsing results…");
         const clean = ollamaText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
         parsed = parseGeminiJson(clean);
@@ -5139,6 +5207,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
           (aiProvider === "anthropic" ? "Claude" : aiProvider === "openai" ? "OpenAI" : aiProvider === "groq" ? "Groq" : aiProvider === "ollama" ? "Llama" : "Gemini") + " returned invalid or truncated JSON. Try again or use a shorter/simpler document."
         );
       }
+      normalizeExtractedBiomarkerKeys(parsed);
       setResult(parsed);
       setEditedBiomarkers(parsed.extracted || {});
       // Auto-fill detected test date
@@ -5159,12 +5228,32 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
     }
   };
 
-  const handleConfirm = () => {
+  const getImportMimeType = (f) => {
+    if (!f) return "image/jpeg";
+    const t = (f.type || "").toLowerCase();
+    if (t === "application/pdf") return "application/pdf";
+    if (t.startsWith("image/")) return t;
+    const name = (f.name || "").toLowerCase();
+    if (name.endsWith(".pdf")) return "application/pdf";
+    if (name.endsWith(".png")) return "image/png";
+    if (name.endsWith(".webp")) return "image/webp";
+    return "image/jpeg";
+  };
+
+  const handleConfirm = async () => {
     const filtered = Object.fromEntries(Object.entries(editedBiomarkers).filter(([k, v]) => v !== "" && v !== undefined));
     const withDerived = computeDerivedBiomarkers(filtered);
     const extractedName = result?.extractedPersonName != null && String(result.extractedPersonName).trim() !== "" ? String(result.extractedPersonName).trim() : null;
     const extractedNameEnglish = result?.extractedPersonNameEnglish != null && String(result.extractedPersonNameEnglish).trim() !== "" ? String(result.extractedPersonNameEnglish).trim() : null;
-    onImport(date, withDerived, extractedName, extractedNameEnglish);
+    const MAX_FILE_SIZE = 4 * 1024 * 1024;
+    let importedFile = null;
+    if (file && file.size <= MAX_FILE_SIZE) {
+      try {
+        const data = await toBase64(file);
+        importedFile = { mimeType: getImportMimeType(file), data };
+      } catch (_) {}
+    }
+    onImport(date, withDerived, extractedName, extractedNameEnglish, importedFile);
   };
 
   return (
@@ -5547,6 +5636,48 @@ function InfoModal({ name, onClose, latestEntry, themeColors }) {
           <p style={{ fontSize: 13, lineHeight: 1.7, color: "#8aabcc" }}>{b.improve}</p>
         </div>
         <button className="btn btn-secondary" onClick={onClose} style={{ width: "100%" }}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── VIEW ORIGINAL IMPORTED FILE MODAL ────────────────────────────────────────
+function ViewOriginalModal({ file, onClose, themeColors }) {
+  const { mimeType, data } = file || {};
+  const isPdf = mimeType === "application/pdf";
+  const isImage = mimeType && mimeType.startsWith("image/");
+  const dataUrl = data ? `data:${mimeType || "image/jpeg"};base64,${data}` : null;
+
+  const [blobUrl, setBlobUrl] = useState(null);
+  useEffect(() => {
+    if (!isPdf || !data) return;
+    try {
+      const binary = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      const blob = new Blob([binary], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      setBlobUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } catch (_) {
+      setBlobUrl(null);
+    }
+  }, [isPdf, data]);
+
+  if (!data && !blobUrl) return null;
+
+  const tc = themeColors || {};
+  return (
+    <div className="modal-bg" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: isPdf ? "90vw" : 800, maxHeight: "90vh", display: "flex", flexDirection: "column", padding: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: `1px solid ${tc.border || "#1a3050"}` }}>
+          <span style={{ fontSize: 16, fontWeight: 600, color: "#ddf" }}>Original imported file</span>
+          <button type="button" onClick={onClose} style={{ background: "none", border: "none", color: "#5a7a9a", cursor: "pointer", fontSize: 20 }} aria-label="Close">✕</button>
+        </div>
+        <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", justifyContent: "center", alignItems: "flex-start", minHeight: 0 }}>
+          {isImage && dataUrl && <img src={dataUrl} alt="Imported document" style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} />}
+          {isPdf && blobUrl && <iframe src={blobUrl} title="Imported PDF" style={{ width: "100%", minHeight: "75vh", border: "none" }} />}
+          {isPdf && !blobUrl && <div style={{ color: tc.textDim || "#5a7a9a", fontSize: 14 }}>Loading PDF…</div>}
+          {!isPdf && !isImage && dataUrl && <img src={dataUrl} alt="Imported document" style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} />}
+        </div>
       </div>
     </div>
   );
