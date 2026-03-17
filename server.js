@@ -37,7 +37,7 @@ function writeStore(people, entries) {
 }
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // Allow all origins so any browser/client can sync (dev proxy or same-host deploy)
 app.use((req, res, next) => {

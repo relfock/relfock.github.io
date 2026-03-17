@@ -59,6 +59,7 @@ export default function App() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showEditPersonModal, setShowEditPersonModal] = useState(false);
+  const [saveError, setSaveError] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showChatPanel, setShowChatPanel] = useState(false);
   const [chatConversations, setChatConversations] = useState(() => [{ id: 1, messages: [] }]);
@@ -188,6 +189,7 @@ export default function App() {
   const save = async (newPeople, newEntries) => {
     let toSavePeople = newPeople;
     let toSaveEntries = newEntries;
+    setSaveError(null);
     try {
       const res = await fetch(dataApiUrl());
       if (res.ok) {
@@ -205,7 +207,9 @@ export default function App() {
         });
         toSaveEntries = Object.fromEntries(Object.entries(merged).filter(([pid]) => peopleById.has(pid)));
       }
-    } catch (_) {}
+    } catch (e) {
+      setSaveError(e?.message || "Failed to load latest data");
+    }
     try {
       await storage.set("bloodwork-people", JSON.stringify(toSavePeople));
       await storage.set("bloodwork-entries", JSON.stringify(toSaveEntries));
@@ -219,8 +223,19 @@ export default function App() {
       if (postRes.ok) {
         setPeople(toSavePeople);
         setEntries(toSaveEntries);
+        setSaveError(null);
+      } else {
+        const errBody = await postRes.text();
+        let msg = `Save failed (${postRes.status})`;
+        try {
+          const j = JSON.parse(errBody);
+          if (j?.error) msg = j.error;
+        } catch (_) {}
+        setSaveError(msg);
       }
-    } catch (_) {}
+    } catch (e) {
+      setSaveError(e?.message || "Network error: data not saved to server");
+    }
   };
 
 
@@ -1038,7 +1053,14 @@ export default function App() {
         </div>
       </nav>
 
-      <div style={{ display: "flex", flex: 1, position: "relative" }}>
+      <div style={{ display: "flex", flex: 1, position: "relative", flexDirection: "column", minHeight: 0 }}>
+        {saveError && (
+          <div style={{ flexShrink: 0, padding: "10px 16px", background: "rgba(255,94,94,0.15)", borderBottom: "1px solid rgba(255,94,94,0.4)", color: "#ff8888", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <span>⚠ {saveError}</span>
+            <button type="button" onClick={() => setSaveError(null)} style={{ background: "none", border: "none", color: "#ffaaaa", cursor: "pointer", fontSize: 18, lineHeight: 1 }} aria-label="Dismiss">×</button>
+          </div>
+        )}
+        <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
         {isMobile && sidebarOpen && (
           <div role="presentation" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 55 }} onClick={() => setSidebarOpen(false)} />
         )}
@@ -1765,6 +1787,7 @@ export default function App() {
             </div>
           )}
         </main>
+        </div>
       </div>
 
       {/* ── CHAT ── */}
@@ -2051,7 +2074,25 @@ export default function App() {
       })()}
 
       {/* ── MODALS ── */}
-      {showImportModal && importTargetPersonId != null && <ImportModal onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish, importedFile, extraEntries) => { if (Array.isArray(extraEntries) && extraEntries.length > 0) { extraEntries.forEach((e) => addEntry(importTargetPersonId, e.date, e.biomarkers || {})); } else { addEntry(importTargetPersonId, date, biomarkers, extractedName, extractedNameEnglish, importedFile); } setShowImportModal(false); setImportTargetPersonId(null); }} personName={people.find(p => p.id === importTargetPersonId)?.name} />}
+      {showImportModal && importTargetPersonId != null && <ImportModal onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish, importedFile, extraEntries) => {
+          if (Array.isArray(extraEntries) && extraEntries.length > 0) {
+            let next = entries;
+            const baseId = Date.now();
+            extraEntries.forEach((e, i) => {
+              next = {
+                ...next,
+                [importTargetPersonId]: [...(next[importTargetPersonId] || []), { date: e.date, biomarkers: e.biomarkers || {}, id: baseId + i, extractedName: undefined, extractedNameEnglish: undefined, importedFile: undefined }]
+                  .sort((a, b) => new Date(a.date) - new Date(b.date)),
+              };
+            });
+            setEntries(next);
+            save(people, next);
+          } else {
+            addEntry(importTargetPersonId, date, biomarkers, extractedName, extractedNameEnglish, importedFile);
+          }
+          setShowImportModal(false);
+          setImportTargetPersonId(null);
+        }} personName={people.find(p => p.id === importTargetPersonId)?.name} />}
       {showManualEntry && <ManualEntryModal onClose={() => setShowManualEntry(false)} onSave={(date, biomarkers) => { addEntry(selectedPerson, date, biomarkers); setShowManualEntry(false); }} person={currentPerson} />}
       {showAddPersonModal && <AddPersonModal onClose={() => setShowAddPersonModal(false)} onAdd={addPerson} />}
       {showEditPersonModal && currentPerson && (
