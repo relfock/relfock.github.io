@@ -3,3 +3,7 @@ dist
 *.log
 .DS_Store
 groq
+.env
+.env.local
+env_local
+data/

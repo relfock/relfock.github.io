@@ -26,6 +26,49 @@ import { TrendDetail } from "./src/components/TrendDetail.jsx";
 import { parseNorwegianAnalysehistorikk } from "./src/parsers/norwegian.js";
 import { nameAndSurnameMatch, AI_PROVIDERS, AI_PROVIDER_FREE_TIER } from "./src/lib/importHelpers.js";
 import { pdfToImages } from "./src/lib/pdfUtils.js";
+import { getOrCreateAppData, updateDataFile } from "./src/lib/googleDrive.js";
+import { requestDriveToken } from "./src/lib/googleAuth.js";
+
+/** Pull API keys from backup JSON (settings.apiKeys, apiKeys, VITE_* at root, alternate casing). */
+function apiKeysFromBackupData(data) {
+  const out = { gemini: "", anthropic: "", openai: "", groq: "" };
+  const set = (p, v) => {
+    const s = v == null ? "" : String(v).trim();
+    if (s) out[p] = s;
+  };
+  const fromObj = (obj) => {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+    for (const [k, v] of Object.entries(obj)) {
+      const kk = String(k).toLowerCase();
+      const s = v == null ? "" : String(v).trim();
+      if (!s) continue;
+      if (kk === "gemini" || kk === "vite_gemini_api_key") set("gemini", s);
+      else if (kk === "anthropic" || kk === "vite_anthropic_api_key") set("anthropic", s);
+      else if (kk === "openai" || kk === "vite_openai_api_key") set("openai", s);
+      else if (kk === "groq" || kk === "vite_groq_api_key") set("groq", s);
+    }
+  };
+  let st = data?.settings;
+  if (typeof st === "string") {
+    try {
+      st = JSON.parse(st);
+    } catch {
+      st = null;
+    }
+  }
+  if (st && typeof st === "object" && !Array.isArray(st)) {
+    fromObj(st.apiKeys);
+    fromObj(st.APIKeys);
+    fromObj(st.api_keys);
+  }
+  fromObj(data?.apiKeys);
+  fromObj(data?.APIKeys);
+  set("gemini", data?.VITE_GEMINI_API_KEY);
+  set("anthropic", data?.VITE_ANTHROPIC_API_KEY);
+  set("openai", data?.VITE_OPENAI_API_KEY);
+  set("groq", data?.VITE_GROQ_API_KEY);
+  return out;
+}
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -49,6 +92,17 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [importStatus, setImportStatus] = useState(null);
   const [driveStatus, setDriveStatus] = useState("disconnected");
+  const [driveToken, setDriveToken] = useState(null);
+  const [driveFileId, setDriveFileId] = useState(null);
+  const [apiKeysFromDrive, setApiKeysFromDrive] = useState({});
+  const [driveLoadError, setDriveLoadError] = useState(null);
+  const [skipDrive, setSkipDrive] = useState(false);
+  const [driveSigningIn, setDriveSigningIn] = useState(false);
+  const [showApiKeysModal, setShowApiKeysModal] = useState(false);
+  const [apiKeysDraft, setApiKeysDraft] = useState({});
+  const [apiKeyVisible, setApiKeyVisible] = useState({});
+  const [backupImportMessage, setBackupImportMessage] = useState(null);
+  const importBackupInputRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -141,43 +195,76 @@ export default function App() {
         },
       };
 
-  const dataApiUrl = () => `${import.meta.env.VITE_API_BASE || ""}/api/data`;
+  const googleClientId = (import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
 
-  // Load: server first (shared across browsers), then fallback to local storage
+  const getApiKey = useCallback((provider) => {
+    const key = (apiKeysFromDrive[provider] || "").trim();
+    if (key) return key;
+    const envMap = { anthropic: "VITE_ANTHROPIC_API_KEY", openai: "VITE_OPENAI_API_KEY", groq: "VITE_GROQ_API_KEY", gemini: "VITE_GEMINI_API_KEY" };
+    return ((import.meta.env[envMap[provider]] || "")).trim();
+  }, [apiKeysFromDrive]);
+
+  // Load: Google Drive (when signed in) or localStorage only. No server; data comes from imported backup or previous local/Drive save.
   useEffect(() => {
     const init = async () => {
-      try {
-        const res = await fetch(dataApiUrl());
-        if (res.ok) {
-          const data = await res.json();
-          const parsedPeople = Array.isArray(data.people) ? data.people : [];
-          const parsedEntries = data.entries && typeof data.entries === "object" ? data.entries : {};
-          setPeople(parsedPeople);
-          setEntries(parsedEntries);
-          setSelectedPerson(parsedPeople[0]?.id ?? null);
-          await storage.set("bloodwork-people", JSON.stringify(parsedPeople));
-          await storage.set("bloodwork-entries", JSON.stringify(parsedEntries));
-          setLoading(false);
-          return;
+      if (googleClientId && !skipDrive) {
+        const storedToken = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("biotracker-drive-token") : null;
+        const storedFileId = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("biotracker-drive-fileId") : null;
+        if (storedToken) {
+          setDriveToken(storedToken);
+          try {
+            const { fileId, data } = await getOrCreateAppData(storedToken);
+            setDriveFileId(fileId);
+            setPeople(data.people);
+            setEntries(data.entries);
+            setApiKeysFromDrive(data.settings?.apiKeys || {});
+            setDriveStatus("connected");
+            setDriveLoadError(null);
+            if (data.people?.length) setSelectedPerson(data.people[0].id);
+            if (typeof sessionStorage !== "undefined") sessionStorage.setItem("biotracker-drive-fileId", fileId);
+          } catch (e) {
+            const msg = e?.message || "Failed to load from Drive";
+            if (msg.includes("401") || msg.includes("Token expired") || msg.includes("invalid")) {
+              if (typeof sessionStorage !== "undefined") {
+                sessionStorage.removeItem("biotracker-drive-token");
+                sessionStorage.removeItem("biotracker-drive-fileId");
+              }
+              setDriveToken(null);
+              setDriveFileId(null);
+              setDriveLoadError("Session expired. Sign in again.");
+            } else {
+              setDriveLoadError(msg);
+            }
+          }
         }
-      } catch (_) {}
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
       try {
         const pr = await storage.get("bloodwork-people");
         const en = await storage.get("bloodwork-entries");
         if (pr && pr.value) {
           const parsedPeople = JSON.parse(pr.value);
           setPeople(Array.isArray(parsedPeople) ? parsedPeople : []);
-          setSelectedPerson(parsedPeople[0]?.id ?? null);
+          setSelectedPerson(parsedPeople?.[0]?.id ?? null);
         }
         if (en && en.value) {
           const parsedEntries = JSON.parse(en.value);
           setEntries(parsedEntries && typeof parsedEntries === "object" ? parsedEntries : {});
         }
+        const storedKeys = typeof localStorage !== "undefined" ? localStorage.getItem("biotracker-api-keys") : null;
+        if (storedKeys) {
+          try {
+            const parsed = JSON.parse(storedKeys);
+            if (parsed && typeof parsed === "object") setApiKeysFromDrive(parsed);
+          } catch (_) {}
+        }
       } catch (_) {}
       setLoading(false);
     };
     init();
-  }, []);
+  }, [googleClientId, skipDrive]);
 
   // Keep selectedPerson valid when people list changes (add/delete)
   useEffect(() => {
@@ -185,56 +272,54 @@ export default function App() {
     else if (!selectedPerson || !people.some((p) => p.id === selectedPerson)) setSelectedPerson(people[0].id);
   }, [people]);
 
-  // Read-merge-write: fetch latest from server, merge in our changes (by id), then save. Prevents concurrent browsers from overwriting each other.
-  const save = async (newPeople, newEntries) => {
-    let toSavePeople = newPeople;
-    let toSaveEntries = newEntries;
+  // Save: Drive when connected, otherwise localStorage only. No server; data stays local or in your Drive.
+  // options.apiKeysOverride: when saving from API keys modal, pass the new keys.
+  const save = async (newPeople, newEntries, options = {}) => {
     setSaveError(null);
-    try {
-      const res = await fetch(dataApiUrl());
-      if (res.ok) {
-        const data = await res.json();
-        const serverPeople = Array.isArray(data.people) ? data.people : [];
-        const serverEntries = data.entries && typeof data.entries === "object" ? data.entries : {};
-        const peopleById = new Map(serverPeople.map((p) => [p.id, p]));
-        newPeople.forEach((p) => peopleById.set(p.id, p));
-        toSavePeople = [...peopleById.values()];
-        const allPersonIds = new Set([...Object.keys(serverEntries), ...Object.keys(newEntries)]);
-        const merged = {};
-        allPersonIds.forEach((pid) => {
-          const list = Object.hasOwn(newEntries, pid) ? (newEntries[pid] || []) : (serverEntries[pid] || []);
-          merged[pid] = [...list].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const keysToSave = options.apiKeysOverride ?? apiKeysFromDrive;
+
+    if (driveToken && driveFileId) {
+      try {
+        await updateDataFile(driveToken, driveFileId, {
+          people: newPeople,
+          entries: newEntries,
+          settings: { apiKeys: keysToSave },
         });
-        toSaveEntries = Object.fromEntries(Object.entries(merged).filter(([pid]) => peopleById.has(pid)));
-      }
-    } catch (e) {
-      setSaveError(e?.message || "Failed to load latest data");
-    }
-    try {
-      await storage.set("bloodwork-people", JSON.stringify(toSavePeople));
-      await storage.set("bloodwork-entries", JSON.stringify(toSaveEntries));
-    } catch (_) {}
-    try {
-      const postRes = await fetch(dataApiUrl(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ people: toSavePeople, entries: toSaveEntries }),
-      });
-      if (postRes.ok) {
-        setPeople(toSavePeople);
-        setEntries(toSaveEntries);
+        setPeople(newPeople);
+        setEntries(newEntries);
         setSaveError(null);
-      } else {
-        const errBody = await postRes.text();
-        let msg = `Save failed (${postRes.status})`;
-        try {
-          const j = JSON.parse(errBody);
-          if (j?.error) msg = j.error;
-        } catch (_) {}
+      } catch (e) {
+        const msg = e?.message || "Drive save failed";
         setSaveError(msg);
+        if (msg.includes("401") || msg.includes("Token expired") || msg.includes("invalid")) {
+          if (typeof sessionStorage !== "undefined") {
+            sessionStorage.removeItem("biotracker-drive-token");
+            sessionStorage.removeItem("biotracker-drive-fileId");
+          }
+          setDriveToken(null);
+          setDriveFileId(null);
+          setDriveStatus("disconnected");
+        }
       }
+      return;
+    }
+
+    try {
+      await storage.set("bloodwork-people", JSON.stringify(newPeople));
+      await storage.set("bloodwork-entries", JSON.stringify(newEntries));
+      setPeople(newPeople);
+      setEntries(newEntries);
+      if (options.apiKeysOverride != null) {
+        setApiKeysFromDrive(options.apiKeysOverride);
+        if (typeof localStorage !== "undefined") {
+          try {
+            localStorage.setItem("biotracker-api-keys", JSON.stringify(options.apiKeysOverride));
+          } catch (_) {}
+        }
+      }
+      setSaveError(null);
     } catch (e) {
-      setSaveError(e?.message || "Network error: data not saved to server");
+      setSaveError(e?.message || "Failed to save locally");
     }
   };
 
@@ -642,7 +727,7 @@ export default function App() {
       let reply = "";
       if (chatProvider === "anthropic") {
         const apiUrl = isDev ? "/api/anthropic" : "https://api.anthropic.com/v1/messages";
-        const key = (import.meta.env.VITE_ANTHROPIC_API_KEY || "").trim();
+        const key = getApiKey("anthropic");
         const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01", ...(key ? { "x-api-key": key } : {}) };
         const body = {
           model: "claude-3-5-sonnet-20241022",
@@ -656,7 +741,7 @@ export default function App() {
         reply = (data.content || []).map((c) => c?.text || "").join("");
       } else if (chatProvider === "openai") {
         const base = isDev ? "/api/openai" : "https://api.openai.com";
-        const key = (import.meta.env.VITE_OPENAI_API_KEY || "").trim();
+        const key = getApiKey("openai");
         const res = await fetch(`${base}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
@@ -693,7 +778,7 @@ export default function App() {
         reply = data?.choices?.[0]?.message?.content ?? "";
       } else if (chatProvider === "groq-compound" || chatProvider === "groq") {
         const base = isDev ? "/api/groq" : "https://api.groq.com";
-        const key = (import.meta.env.VITE_GROQ_API_KEY || "").trim();
+        const key = getApiKey("groq");
         const isCompound = chatProvider === "groq-compound";
         const body = isCompound
           ? { model: "groq/compound", messages: [{ role: "system", content: systemPrompt }, ...messagesForApi], max_tokens: 4096, compound_custom: { tools: { enabled_tools: ["visit_website", "web_search"] } } }
@@ -736,10 +821,10 @@ export default function App() {
         reply = data?.choices?.[0]?.message?.content ?? "";
       } else {
         const base = isDev ? "/api/gemini" : "https://generativelanguage.googleapis.com";
-        const key = (import.meta.env.VITE_GEMINI_API_KEY || "").trim();
-        const url = `${base}/v1beta/models/gemini-2.0-flash:generateContent`;
+        const key = getApiKey("gemini");
+        const url = `${base}/v1beta/models/gemini-2.5-flash:generateContent`;
         const headers = { "Content-Type": "application/json" };
-        if (!isDev && key) headers["x-goog-api-key"] = key;
+        if (key) headers["x-goog-api-key"] = key;
         const contents = messagesForApi.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.content }] }));
         const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.2 } }) });
         if (!res.ok) throw new Error(await res.text());
@@ -784,6 +869,51 @@ export default function App() {
       </div>
     </div>
   );
+
+  if (googleClientId && !driveToken && !skipDrive) {
+    const handleGoogleSignIn = async () => {
+      setDriveLoadError(null);
+      setDriveSigningIn(true);
+      try {
+        const token = await requestDriveToken(googleClientId);
+        if (!token) {
+          setDriveSigningIn(false);
+          return;
+        }
+        setDriveToken(token);
+        if (typeof sessionStorage !== "undefined") sessionStorage.setItem("biotracker-drive-token", token);
+        const { fileId, data } = await getOrCreateAppData(token);
+        setDriveFileId(fileId);
+        setPeople(data.people);
+        setEntries(data.entries);
+        setApiKeysFromDrive(data.settings?.apiKeys || {});
+        setDriveStatus("connected");
+        setDriveLoadError(null);
+        if (data.people?.length) setSelectedPerson(data.people[0].id);
+        if (typeof sessionStorage !== "undefined") sessionStorage.setItem("biotracker-drive-fileId", fileId);
+      } catch (e) {
+        setDriveLoadError(e?.message || "Sign-in failed");
+      }
+      setDriveSigningIn(false);
+    };
+    return (
+      <div data-theme={theme} style={{ background: themeColors.appBg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', 'Courier New', monospace", color: themeColors.text }}>
+        <div style={{ textAlign: "center", maxWidth: 360, padding: 24 }}>
+          <div style={{ width: 48, height: 48, borderRadius: 12, background: `linear-gradient(135deg, ${themeColors.accent}, ${themeColors.accentDark})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, margin: "0 auto 20px" }}>🧬</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: themeColors.accent, marginBottom: 8, fontFamily: "Space Grotesk, sans-serif" }}>Biotracker</div>
+          <div style={{ fontSize: 13, color: themeColors.textDim, marginBottom: 24 }}>Sign in with Google to store your data and API keys in your Drive. Data stays private in your account.</div>
+          {driveLoadError && <div style={{ fontSize: 12, color: "#f66", marginBottom: 12, padding: "8px 12px", background: "rgba(255,100,100,0.1)", borderRadius: 8 }}>{driveLoadError}</div>}
+          <button type="button" className="btn btn-primary" onClick={handleGoogleSignIn} disabled={driveSigningIn} style={{ width: "100%", marginBottom: 12, padding: "12px 20px" }}>
+            {driveSigningIn ? "Signing in…" : "Sign in with Google"}
+          </button>
+          <button type="button" className="btn btn-secondary" style={{ width: "100%" }} onClick={() => setSkipDrive(true)}>
+            Continue without Google
+          </button>
+          <div style={{ fontSize: 11, color: themeColors.textDim, marginTop: 20 }}>Without Google, data is stored on this device only. Import a backup (Tools → Import backup) to load data.</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div data-theme={theme} style={{ background: themeColors.appBg, minHeight: "100vh", fontFamily: "'DM Mono', 'Courier New', monospace", color: themeColors.text, display: "flex", flexDirection: "column" }}>
@@ -858,6 +988,42 @@ export default function App() {
           .modal-grid-2 { grid-template-columns: 1fr !important; }
         }
       `}</style>
+
+      <input
+        type="file"
+        ref={importBackupInputRef}
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          setBackupImportMessage(null);
+          try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            const parsedPeople = Array.isArray(data.people) ? data.people : [];
+            const parsedEntries = data.entries && typeof data.entries === "object" ? data.entries : {};
+            const keysObj = apiKeysFromBackupData(data);
+            const hasAnyKey = Object.values(keysObj).some((v) => v && String(v).trim());
+            setPeople(parsedPeople);
+            setEntries(parsedEntries);
+            setApiKeysFromDrive(keysObj);
+            setSelectedPerson(parsedPeople[0]?.id ?? null);
+            if (typeof localStorage !== "undefined") {
+              try {
+                localStorage.setItem("biotracker-api-keys", JSON.stringify(keysObj));
+              } catch (_) {}
+            }
+            await save(parsedPeople, parsedEntries, { apiKeysOverride: keysObj });
+            setBackupImportMessage(`Imported ${parsedPeople.length} person(s), ${Object.keys(parsedEntries).length} profile(s) of entries${hasAnyKey ? ", and API keys" : ""}.`);
+            setTimeout(() => setBackupImportMessage(null), 5000);
+          } catch (err) {
+            setBackupImportMessage(err?.message || "Invalid backup file");
+            setTimeout(() => setBackupImportMessage(null), 5000);
+          }
+        }}
+      />
 
       {/* TOP NAV */}
       <nav style={{ padding: isMobile ? "10px 12px" : "12px 24px", borderBottom: `1px solid ${themeColors.border}`, display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, flexWrap: "wrap", background: themeColors.navBg, backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 50 }}>
@@ -1016,7 +1182,20 @@ export default function App() {
                     style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
                     onClick={() => {
                       setShowSettingsMenu(false);
-                      const payload = { people, entries, exportedAt: new Date().toISOString(), version: 1 };
+                      const entriesWithFiles = Object.fromEntries(
+                        Object.entries(entries).map(([pid, list]) => [
+                          pid,
+                          (list || []).map((e) => ({
+                            id: e.id,
+                            date: e.date,
+                            biomarkers: e.biomarkers,
+                            extractedName: e.extractedName,
+                            extractedNameEnglish: e.extractedNameEnglish,
+                            importedFile: e.importedFile ?? null,
+                          })),
+                        ])
+                      );
+                      const payload = { people, entries: entriesWithFiles, settings: { apiKeys: apiKeysFromDrive }, exportedAt: new Date().toISOString(), version: 1 };
                       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
                       const a = document.createElement("a");
                       a.href = URL.createObjectURL(blob);
@@ -1030,13 +1209,46 @@ export default function App() {
                   <button
                     className="btn btn-secondary"
                     style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
+                    onClick={() => { setShowSettingsMenu(false); importBackupInputRef.current?.click(); }}
+                  >
+                    📥 Import backup (JSON)
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
                     onClick={() => {
                       setShowSettingsMenu(false);
-                      if (driveStatus === "connected") setDriveStatus("disconnected");
-                      else alert("Google Drive\n\n• Export backup (above) to download a JSON file, then upload it to Google Drive for your own backup.\n• Full automatic sync requires a Google Cloud project with Drive API and OAuth; data is already stored on the server and shared across browsers.");
+                      if (driveStatus === "connected" && driveToken) {
+                        if (typeof sessionStorage !== "undefined") {
+                          sessionStorage.removeItem("biotracker-drive-token");
+                          sessionStorage.removeItem("biotracker-drive-fileId");
+                        }
+                        setDriveToken(null);
+                        setDriveFileId(null);
+                        setDriveStatus("disconnected");
+                      } else if (!googleClientId) {
+                        alert("Google Drive\n\nSet VITE_GOOGLE_CLIENT_ID in .env and create a Google Cloud OAuth client (Drive API, app data scope) to sync data to your Drive.");
+                      }
                     }}
                   >
                     ☁️ {driveStatus === "connected" ? "Drive: Disconnect" : "Drive: Connect"}
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
+                    onClick={() => {
+                      setApiKeysDraft({
+                        gemini: apiKeysFromDrive.gemini ?? "",
+                        anthropic: apiKeysFromDrive.anthropic ?? "",
+                        openai: apiKeysFromDrive.openai ?? "",
+                        groq: apiKeysFromDrive.groq ?? "",
+                      });
+                      setApiKeyVisible({});
+                      setShowApiKeysModal(true);
+                      setShowSettingsMenu(false);
+                    }}
+                  >
+                    🔑 API keys{driveStatus === "connected" ? " (Drive)" : ""}
                   </button>
                   <button
                     className="btn btn-danger"
@@ -1045,6 +1257,26 @@ export default function App() {
                     onClick={() => { if (currentPerson) setConfirmDeletePerson(currentPerson.id); setShowSettingsMenu(false); }}
                   >
                     🗑 Delete person
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    style={{ display: "block", width: "100%", justifyContent: "flex-start", fontSize: 12, marginTop: 8 }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      if (!window.confirm("Clear all people, entries, and API keys from this device? You can load them again by importing a backup.")) return;
+                      if (typeof localStorage !== "undefined") {
+                        localStorage.removeItem("bloodwork-people");
+                        localStorage.removeItem("bloodwork-entries");
+                        localStorage.removeItem("biotracker-api-keys");
+                      }
+                      setPeople(INIT_PEOPLE);
+                      setEntries({});
+                      setApiKeysFromDrive({});
+                      setSelectedPerson(null);
+                      setSaveError(null);
+                    }}
+                  >
+                    🧹 Clear all data (this device)
                   </button>
                 </div>
               </>
@@ -1058,6 +1290,12 @@ export default function App() {
           <div style={{ flexShrink: 0, padding: "10px 16px", background: "rgba(255,94,94,0.15)", borderBottom: "1px solid rgba(255,94,94,0.4)", color: "#ff8888", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <span>⚠ {saveError}</span>
             <button type="button" onClick={() => setSaveError(null)} style={{ background: "none", border: "none", color: "#ffaaaa", cursor: "pointer", fontSize: 18, lineHeight: 1 }} aria-label="Dismiss">×</button>
+          </div>
+        )}
+        {backupImportMessage && (
+          <div style={{ flexShrink: 0, padding: "10px 16px", background: backupImportMessage.startsWith("Imported") ? "rgba(0,200,120,0.15)" : "rgba(255,94,94,0.15)", borderBottom: backupImportMessage.startsWith("Imported") ? "1px solid rgba(0,200,120,0.4)" : "1px solid rgba(255,94,94,0.4)", color: backupImportMessage.startsWith("Imported") ? "#6acc9a" : "#ff8888", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <span>{backupImportMessage.startsWith("Imported") ? "✓ " : "⚠ "}{backupImportMessage}</span>
+            <button type="button" onClick={() => setBackupImportMessage(null)} style={{ background: "none", border: "none", color: "inherit", opacity: 0.8, cursor: "pointer", fontSize: 18, lineHeight: 1 }} aria-label="Dismiss">×</button>
           </div>
         )}
         <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
@@ -2074,7 +2312,7 @@ export default function App() {
       })()}
 
       {/* ── MODALS ── */}
-      {showImportModal && importTargetPersonId != null && <ImportModal onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish, importedFile, extraEntries) => {
+      {showImportModal && importTargetPersonId != null && <ImportModal getApiKey={getApiKey} onClose={() => { setShowImportModal(false); setImportTargetPersonId(null); }} onImport={(date, biomarkers, extractedName, extractedNameEnglish, importedFile, extraEntries) => {
           if (Array.isArray(extraEntries) && extraEntries.length > 0) {
             let next = entries;
             const baseId = Date.now();
@@ -2105,6 +2343,59 @@ export default function App() {
       {showInfoModal && <InfoModal name={showInfoModal} onClose={() => setShowInfoModal(null)} latestEntry={latestEntry} themeColors={themeColors} />}
       {showExportModal && <ExportModal onClose={() => setShowExportModal(false)} person={currentPerson} personEntries={personEntries} cumulativeSnapshot={cumulativeSnapshot} getBirthdayDisplay={getBirthdayDisplay} getAge={getAge} />}
       {viewOriginalFile && <ViewOriginalModal file={viewOriginalFile} onClose={() => setViewOriginalFile(null)} themeColors={themeColors} />}
+      {showApiKeysModal && (
+        <div className="modal-bg" onClick={() => setShowApiKeysModal(false)} role="presentation">
+          <div className="modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600, color: themeColors.accent }}>API keys</div>
+            <div style={{ fontSize: 12, color: themeColors.textDim, marginBottom: 16 }}>
+              Optional. Used for chat and PDF/image import. {driveToken && driveFileId ? "Stored in your Google Drive." : "Stored on this device only."}
+              Keys are never sent to this app's server—only to the AI provider when you use chat or import.
+            </div>
+            {["gemini", "anthropic", "openai", "groq"].map((p) => (
+              <div key={p} style={{ marginBottom: 12 }}>
+                <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4, textTransform: "capitalize" }}>{p}</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type={apiKeyVisible[p] ? "text" : "password"}
+                    autoComplete="off"
+                    placeholder={p === "gemini" ? "AI Studio key" : p === "anthropic" ? "sk-ant-..." : p === "openai" ? "sk-..." : "gsk_..."}
+                    value={apiKeysDraft[p] || ""}
+                    onChange={(e) => setApiKeysDraft((prev) => ({ ...prev, [p]: e.target.value }))}
+                    style={{ fontFamily: "monospace", fontSize: 12, flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setApiKeyVisible((prev) => ({ ...prev, [p]: !prev[p] }))}
+                    style={{ padding: "8px 10px", background: themeColors.border, border: "none", borderRadius: 6, color: themeColors.textMuted, cursor: "pointer", fontSize: 14 }}
+                    title={apiKeyVisible[p] ? "Hide" : "Show"}
+                    aria-label={apiKeyVisible[p] ? "Hide key" : "Show key"}
+                  >
+                    {apiKeyVisible[p] ? "🙈" : "👁"}
+                  </button>
+                </div>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setApiKeysFromDrive(apiKeysDraft);
+                  if (driveToken && driveFileId) {
+                    save(people, entries, { apiKeysOverride: apiKeysDraft });
+                  } else if (typeof localStorage !== "undefined") {
+                    localStorage.setItem("biotracker-api-keys", JSON.stringify(apiKeysDraft));
+                  }
+                  setShowApiKeysModal(false);
+                }}
+              >
+                {driveToken && driveFileId ? "Save to Drive" : "Save"}
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowApiKeysModal(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2113,7 +2404,7 @@ export default function App() {
 
 // ─── IMPORT MODAL (AI/Cyrillic/Norwegian/pdfToImages are in src/lib and src/parsers) ───
 // personName is used ONLY for UI (e.g. "Differs from profile (Zoya)"). It must NEVER be sent to the AI — extraction is from the document only.
-function ImportModal({ onClose, onImport, personName }) {
+function ImportModal({ getApiKey, onClose, onImport, personName }) {
   const [stage, setStage] = useState("upload");
   const [file, setFile] = useState(null);
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
@@ -2164,25 +2455,37 @@ function ImportModal({ onClose, onImport, personName }) {
       t === "application/json" || name.endsWith(".json");
   };
 
-  // Auto-process as soon as a file is chosen
+  // Auto-process as soon as a file is chosen; show spinner immediately so we never show "Processing automatically…" without progress
   const handleFileChange = (e) => {
     const chosen = e.target.files[0];
     if (chosen) {
       setFile(chosen);
+      setError(null);
+      setLoading(true);
+      setImportStatus("Starting…");
       processFile(chosen);
     }
   };
 
   const processFile = async (chosenFile) => {
     const f = chosenFile || file;
-    if (!f) return;
+    if (!f) {
+      setLoading(false);
+      return;
+    }
+    if (typeof getApiKey !== "function") {
+      setError("Import configuration error. Please refresh the page.");
+      setLoading(false);
+      return;
+    }
     const isDev = import.meta.env.DEV;
-    const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY || "").trim();
-    const anthropicKey = (import.meta.env.VITE_ANTHROPIC_API_KEY || "").trim();
-    const openaiKey = (import.meta.env.VITE_OPENAI_API_KEY || "").trim();
-    const groqKey = (import.meta.env.VITE_GROQ_API_KEY || "").trim();
-    if (aiProvider === "gemini" && !isDev && !geminiKey) {
-      setError("API key not set. Set VITE_GEMINI_API_KEY in .env for production builds.");
+    const geminiKey = getApiKey("gemini");
+    const anthropicKey = getApiKey("anthropic");
+    const openaiKey = getApiKey("openai");
+    const groqKey = getApiKey("groq");
+    if (aiProvider === "gemini" && !geminiKey) {
+      setError("Gemini API key not set. Open Tools → API keys and add your key (from aistudio.google.com), or set VITE_GEMINI_API_KEY in .env.");
+      setLoading(false);
       return;
     }
     if (aiProvider === "anthropic" && !anthropicKey) {
@@ -2190,6 +2493,7 @@ function ImportModal({ onClose, onImport, personName }) {
         ? " In dev: add to .env one line: VITE_ANTHROPIC_API_KEY=sk-ant-api03-... (no quotes, no space after =). Or set ANTHROPIC_API_KEY in your shell so the proxy can use it. Restart the dev server after changing .env."
         : " Set VITE_ANTHROPIC_API_KEY in .env for production builds.";
       setError("Anthropic API key not set or not visible to the app. " + checklist);
+      setLoading(false);
       return;
     }
     if (aiProvider === "openai" && !openaiKey) {
@@ -2197,13 +2501,12 @@ function ImportModal({ onClose, onImport, personName }) {
         ? " In dev: add VITE_OPENAI_API_KEY=sk-... to .env in the project root and restart the dev server."
         : " Set VITE_OPENAI_API_KEY in .env for production builds.";
       setError("OpenAI API key not set or not visible to the app. " + checklist);
+      setLoading(false);
       return;
     }
     if (aiProvider === "groq" && !groqKey) {
-      const checklist = isDev
-        ? " In dev: add VITE_GROQ_API_KEY=gsk_... to .env (get one at console.groq.com) and restart the dev server."
-        : " Set VITE_GROQ_API_KEY in .env for production builds.";
-      setError("Groq API key not set or not visible to the app. " + checklist);
+      setError("Groq API key not set. Open Tools → API keys and add your key (from console.groq.com), or set VITE_GROQ_API_KEY in .env.");
+      setLoading(false);
       return;
     }
     const fileName = (f.name || "").toLowerCase();
@@ -2528,15 +2831,19 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
           parsed = parseGeminiJson(clean);
         }
       } else if (aiProvider === "openai") {
-        const openaiKey = (import.meta.env.VITE_OPENAI_API_KEY || "").trim();
+        const openaiKey = getApiKey("openai");
         const openaiBase = isDev ? "/api/openai" : "https://api.openai.com";
         let imageUrls;
         if (isPdf(f)) {
           setImportStatus("Converting PDF to images…");
+          const PDF_CONVERT_MS = 90_000;
           try {
-            imageUrls = await pdfToImages(b64);
+            imageUrls = await Promise.race([
+              pdfToImages(b64),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("PDF conversion timed out after 90s. Try a smaller file or use Gemini/Claude.")), PDF_CONVERT_MS)),
+            ]);
           } catch (e) {
-            throw new Error("Failed to convert PDF to images: " + (e?.message || String(e)));
+            throw new Error(e?.message?.includes("timed out") ? e.message : "Failed to convert PDF to images: " + (e?.message || String(e)));
           }
           if (!imageUrls?.length) throw new Error("PDF had no renderable pages.");
         } else {
@@ -2575,15 +2882,19 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
         const clean = openaiText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
         parsed = parseGeminiJson(clean);
       } else if (aiProvider === "groq") {
-        const groqKey = (import.meta.env.VITE_GROQ_API_KEY || "").trim();
+        const groqKey = getApiKey("groq");
         const groqBase = isDev ? "/api/groq" : "https://api.groq.com";
         let imageUrls;
         if (isPdf(f)) {
           setImportStatus("Converting PDF to images…");
+          const PDF_CONVERT_MS = 90_000;
           try {
-            imageUrls = (await pdfToImages(b64, 5)).slice(0, 5);
+            imageUrls = (await Promise.race([
+              pdfToImages(b64, 5),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("PDF conversion timed out after 90s. Try a smaller file or use Gemini/Claude.")), PDF_CONVERT_MS)),
+            ])).slice(0, 5);
           } catch (e) {
-            throw new Error("Failed to convert PDF to images: " + (e?.message || String(e)));
+            throw new Error(e?.message?.includes("timed out") ? e.message : "Failed to convert PDF to images: " + (e?.message || String(e)));
           }
           if (!imageUrls?.length) throw new Error("PDF had no renderable pages.");
         } else {
@@ -2625,11 +2936,15 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
         let imagesBase64;
         if (isPdf(f)) {
           setImportStatus("Converting PDF to images…");
+          const PDF_CONVERT_MS = 90_000;
           try {
-            const imageUrls = (await pdfToImages(b64, 3)).slice(0, 3);
+            const imageUrls = (await Promise.race([
+              pdfToImages(b64, 3),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("PDF conversion timed out after 90s. Try a smaller file or use Gemini/Claude.")), PDF_CONVERT_MS)),
+            ])).slice(0, 3);
             imagesBase64 = imageUrls.map((dataUrl) => (dataUrl.indexOf(",") >= 0 ? dataUrl.split(",")[1] : dataUrl));
           } catch (e) {
-            throw new Error("Failed to convert PDF to images: " + (e?.message || String(e)));
+            throw new Error(e?.message?.includes("timed out") ? e.message : "Failed to convert PDF to images: " + (e?.message || String(e)));
           }
           if (!imagesBase64?.length) throw new Error("PDF had no renderable pages.");
         } else {
@@ -2664,7 +2979,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
         const apiBase = isDev ? "/api/gemini" : "https://generativelanguage.googleapis.com";
         const apiUrl = `${apiBase}/v1beta/models/${geminiModel}:generateContent`;
         const headers = { "Content-Type": "application/json" };
-        if (!isDev && geminiKey) headers["x-goog-api-key"] = geminiKey;
+        if (geminiKey) headers["x-goog-api-key"] = geminiKey;
         const mimeType = getGeminiMimeType(f);
         const requestBody = {
           contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: b64 } }, { text: prompt }] }],
@@ -2677,7 +2992,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
             const errBody = await response.text();
             if (response.status === 401 || response.status === 403) {
               throw new Error(
-                "Invalid or missing Gemini API key. Set VITE_GEMINI_API_KEY in .env or GEMINI_API_KEY in your environment. Get a key at aistudio.google.com/app/apikey"
+                "Gemini rejected the request (missing or invalid API key). Add your key under Tools → API keys, or VITE_GEMINI_API_KEY in .env. Get a key at aistudio.google.com/app/apikey"
               );
             }
             if (response.status === 429) {
@@ -2722,6 +3037,7 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
       } else {
         setError("Failed to process file: " + e.message);
       }
+      setFile(null);
     } finally {
       clearTimeout(timeoutId);
       setLoading(false);
@@ -2805,6 +3121,9 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
                 const dropped = e.dataTransfer.files[0];
                 if (dropped && isAcceptedFile(dropped)) {
                   setFile(dropped);
+                  setError(null);
+                  setLoading(true);
+                  setImportStatus("Starting…");
                   processFile(dropped);
                 }
               }}

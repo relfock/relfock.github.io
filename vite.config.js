@@ -44,8 +44,11 @@ export default defineConfig(({ mode }) => {
           proxyTimeout: 120000,
           rewrite: (path) => path.replace(/^\/api\/gemini/, ""),
           configure: (proxy) => {
-            proxy.on("proxyReq", (proxyReq) => {
-              if (apiKey) proxyReq.setHeader("x-goog-api-key", apiKey);
+            proxy.on("proxyReq", (proxyReq, req) => {
+              const raw = req.headers["x-goog-api-key"] || req.headers["X-Goog-Api-Key"];
+              const fromClient = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+              const final = fromClient || apiKey;
+              if (final) proxyReq.setHeader("x-goog-api-key", final);
             });
           },
         },
@@ -55,8 +58,11 @@ export default defineConfig(({ mode }) => {
           proxyTimeout: 480000,
           rewrite: (path) => path.replace(/^\/api\/anthropic/, "/v1/messages"),
           configure: (proxy) => {
-            proxy.on("proxyReq", (proxyReq) => {
-              if (anthropicKey) proxyReq.setHeader("x-api-key", anthropicKey);
+            proxy.on("proxyReq", (proxyReq, req) => {
+              const raw = req.headers["x-api-key"] || req.headers["X-Api-Key"];
+              const fromClient = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+              const final = fromClient || anthropicKey;
+              if (final) proxyReq.setHeader("x-api-key", final);
               proxyReq.setHeader("anthropic-version", "2023-06-01");
             });
           },
@@ -67,8 +73,14 @@ export default defineConfig(({ mode }) => {
           proxyTimeout: 120000,
           rewrite: (path) => path.replace(/^\/api\/openai/, ""),
           configure: (proxy) => {
-            proxy.on("proxyReq", (proxyReq) => {
-              if (openaiKey) proxyReq.setHeader("Authorization", `Bearer ${openaiKey}`);
+            proxy.on("proxyReq", (proxyReq, req) => {
+              const raw = req.headers.authorization || req.headers.Authorization;
+              const fromClient = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+              if (fromClient) {
+                proxyReq.setHeader("Authorization", fromClient.startsWith("Bearer ") ? fromClient : `Bearer ${fromClient}`);
+              } else if (openaiKey) {
+                proxyReq.setHeader("Authorization", `Bearer ${openaiKey}`);
+              }
             });
           },
         },
@@ -78,8 +90,14 @@ export default defineConfig(({ mode }) => {
           proxyTimeout: 120000,
           rewrite: (path) => path.replace(/^\/api\/groq/, ""),
           configure: (proxy) => {
-            proxy.on("proxyReq", (proxyReq) => {
-              if (groqKey) proxyReq.setHeader("Authorization", `Bearer ${groqKey}`);
+            proxy.on("proxyReq", (proxyReq, req) => {
+              const raw = req.headers.authorization || req.headers.Authorization;
+              const fromClient = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+              if (fromClient) {
+                proxyReq.setHeader("Authorization", fromClient.startsWith("Bearer ") ? fromClient : `Bearer ${fromClient}`);
+              } else if (groqKey) {
+                proxyReq.setHeader("Authorization", `Bearer ${groqKey}`);
+              }
             });
           },
         },
