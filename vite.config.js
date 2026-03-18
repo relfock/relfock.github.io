@@ -26,6 +26,9 @@ export default defineConfig(({ mode }) => {
   ).trim();
 
   return {
+    // Relative asset URLs so the app loads on GitHub Pages whether the site is at domain root
+    // (user.github.io) or a project subpath (user.github.io/repo/). Absolute "/assets/..." breaks the latter.
+    base: "./",
     plugins: [react()],
     server: {
       host: true, // listen on 0.0.0.0 so LAN devices can access (e.g. http://<your-ip>:5173)

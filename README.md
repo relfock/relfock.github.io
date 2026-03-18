@@ -17,6 +17,8 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. Copy `.env.example` to `.env` for API keys (PDF import / chat) if needed.
+Run commands from the **repo root** (the folder that contains `package.json`), not from `src/`. Open http://localhost:5173. Copy `.env.example` to `.env` for API keys (PDF import / chat) if needed.
+
+**Published site is blank:** In the browser, open DevTools → Network and reload; if `index-*.js` is red (404), redeploy after the latest push (build uses relative `./assets/…` so it works for both `user.github.io` and project subpaths). Confirm **Settings → Pages** uses **GitHub Actions**, not an empty branch folder.
 
 Optional: set `VITE_API_BASE` to a URL that implements `POST /api/fetch-url` if you want chat to read arbitrary links (browser-only builds hit CORS on most sites).
