@@ -30,14 +30,6 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true, // listen on 0.0.0.0 so LAN devices can access (e.g. http://<your-ip>:5173)
       proxy: {
-        "/api/data": {
-          target: "http://localhost:3001",
-          changeOrigin: true,
-        },
-        "/api/fetch-url": {
-          target: "http://localhost:3001",
-          changeOrigin: true,
-        },
         "/api/gemini": {
           target: "https://generativelanguage.googleapis.com",
           changeOrigin: true,

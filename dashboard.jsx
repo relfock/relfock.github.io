@@ -695,16 +695,11 @@ export default function App() {
     const useNativeLinkTool = chatProvider === "groq-compound";
     let urlContent = "";
     if (!useNativeLinkTool) {
+      const { fetchUrlContentForChat } = await import("./src/utils/fetchUrlContent.js");
       for (const url of uniqueUrls) {
-        try {
-          const base = (import.meta.env.VITE_API_BASE || "").trim() || "";
-          const res = await fetch(`${base}/api/fetch-url`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
-          const data = await res.json();
-          if (data.text) urlContent += `\n\n--- Content from ${url} ---\n\n${data.text}`;
-          else if (data.error) urlContent += `\n\n[Could not fetch ${url}: ${data.error}]`;
-        } catch (e) {
-          urlContent += `\n\n[Could not fetch ${url}: ${e?.message || "network error"}]`;
-        }
+        const data = await fetchUrlContentForChat(url);
+        if (data.text) urlContent += `\n\n--- Content from ${url} ---\n\n${data.text}`;
+        else if (data.error) urlContent += `\n\n[Could not fetch ${url}: ${data.error}]`;
       }
     }
     const linkBlock = urlContent ? `[Content from linked page(s):]${urlContent}\n\n` : "";
