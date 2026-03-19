@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ComposedChart, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceArea, ResponsiveContainer, Area, AreaChart } from "recharts";
 import { BIOMARKER_DB } from "./src/data/biomarkerDb.js";
 import {
   CATEGORIES,
@@ -75,7 +74,7 @@ export default function App() {
   const [people, setPeople] = useState(INIT_PEOPLE);
   const [selectedPerson, setSelectedPerson] = useState(null);
   const [entries, setEntries] = useState({});
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState("biomarkers");
   const [selectedBiomarker, setSelectedBiomarker] = useState(null);
   const [viewBeforeTrendDetail, setViewBeforeTrendDetail] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -87,7 +86,6 @@ export default function App() {
   const [filterRecord, setFilterRecord] = useState("all"); // "all" | "noRecord"
   const [biomarkersViewMode, setBiomarkersViewMode] = useState("table"); // "cards" | "table"
   const [biomarkersTableSort, setBiomarkersTableSort] = useState({ by: "name", dir: "asc" });
-  const [overviewTableSort, setOverviewTableSort] = useState({ by: "name", dir: "asc" });
   const [historyTableSort, setHistoryTableSort] = useState({ by: "name", dir: "asc" });
   const [loading, setLoading] = useState(true);
   const [importStatus, setImportStatus] = useState(null);
@@ -104,7 +102,6 @@ export default function App() {
   const [backupImportMessage, setBackupImportMessage] = useState(null);
   const importBackupInputRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState("overview");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [viewOriginalFile, setViewOriginalFile] = useState(null);
   const [statusFilter, setStatusFilter] = useState(null);
@@ -158,6 +155,10 @@ export default function App() {
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute("content", themeColors.appBg);
   }, [theme, themeColors.appBg]);
+
+  useEffect(() => {
+    if (view === "trends" && !selectedBiomarker) setView("biomarkers");
+  }, [view, selectedBiomarker]);
 
   const getAge = (person) => {
     if (person.birthday) {
@@ -413,12 +414,20 @@ export default function App() {
   const noRecordCount = allBiomarkers.filter(hasNoRecord).length;
   const totalBiomarkersCount = allBiomarkers.length;
 
+  const matchesStatusFilter = (name) => {
+    if (!statusFilter) return true;
+    const snap = cumulativeSnapshot[name];
+    if (!snap || snap.val === undefined) return false;
+    const s = getStatus(name, snap.val);
+    return statusFilter === "high" ? (s === "high" || s === "out-of-range") : s === statusFilter;
+  };
+
   const filteredBiomarkers = allBiomarkers.filter(b => {
     const cat = BIOMARKER_DB[b].category;
     const matchCat = filterCat === "All" || cat === filterCat;
     const matchSearch = !searchTerm || b.toLowerCase().includes(searchTerm.toLowerCase()) || cat.toLowerCase().includes(searchTerm.toLowerCase());
     const matchRecord = filterRecord === "all" || (filterRecord === "noRecord" && hasNoRecord(b));
-    return matchCat && matchSearch && matchRecord;
+    return matchCat && matchSearch && matchRecord && matchesStatusFilter(b);
   });
 
   const getStatusCounts = () => {
@@ -437,6 +446,10 @@ export default function App() {
 
   const counts = getStatusCounts();
   const healthScore = counts.total > 0 ? Math.round((counts.optimal + counts.elite + counts.sufficient * 0.5) / counts.total * 100) : null;
+
+  const navBiomarkersActive = view === "biomarkers" || (view === "trends" && viewBeforeTrendDetail !== "history");
+  const navHistoryActive = view === "history" || (view === "trends" && viewBeforeTrendDetail === "history");
+  const categorySidebarActive = view === "biomarkers" || (view === "trends" && viewBeforeTrendDetail === "biomarkers");
 
   const findBiomarkerKey = (name) => {
     const n = (name || "").trim();
@@ -1317,20 +1330,17 @@ export default function App() {
             transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)",
           } : {}),
         }}>
-          {[
-            { id: "dashboard", icon: "◈", label: "Overview" },
-            { id: "biomarkers", icon: "⬡", label: "All Markers" },
-            { id: "trends", icon: "◫", label: "Trends" },
-            { id: "history", icon: "◧", label: "History" },
-          ].map(item => (
-            <button key={item.id} onClick={() => { setView(item.id); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: view === item.id ? `${themeColors.accent}14` : "transparent", color: view === item.id ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
-              <span style={{ fontSize: 16 }}>{item.icon}</span>
-              {item.label}
-            </button>
-          ))}
+          <button type="button" onClick={() => { setSelectedBiomarker(null); setViewBeforeTrendDetail(null); setView("biomarkers"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: navBiomarkersActive ? `${themeColors.accent}14` : "transparent", color: navBiomarkersActive ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
+            <span style={{ fontSize: 16 }}>⬡</span>
+            Biomarkers
+          </button>
+          <button type="button" onClick={() => { setSelectedBiomarker(null); setViewBeforeTrendDetail(null); setView("history"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: navHistoryActive ? `${themeColors.accent}14` : "transparent", color: navHistoryActive ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
+            <span style={{ fontSize: 16 }}>◧</span>
+            History
+          </button>
           <div style={{ borderTop: `1px solid ${themeColors.border}`, marginTop: 8, paddingTop: 8 }}>
             {CATEGORIES.map(cat => (
-              <button key={cat} onClick={() => { setFilterCat(cat); setView("biomarkers"); if (isMobile) setSidebarOpen(false); }} style={{ display: "block", width: "100%", padding: "10px 12px", minHeight: 40, borderRadius: 6, border: "none", cursor: "pointer", background: filterCat === cat && view === "biomarkers" ? `${themeColors.accent}0d` : "transparent", color: filterCat === cat && view === "biomarkers" ? themeColors.textMuted : themeColors.textDim, transition: "all 0.2s", textAlign: "left", fontSize: 11, fontFamily: "inherit" }}>
+              <button key={cat} type="button" onClick={() => { setFilterCat(cat); setSelectedBiomarker(null); setViewBeforeTrendDetail(null); setView("biomarkers"); if (isMobile) setSidebarOpen(false); }} style={{ display: "block", width: "100%", padding: "10px 12px", minHeight: 40, borderRadius: 6, border: "none", cursor: "pointer", background: filterCat === cat && categorySidebarActive ? `${themeColors.accent}0d` : "transparent", color: filterCat === cat && categorySidebarActive ? themeColors.textMuted : themeColors.textDim, transition: "all 0.2s", textAlign: "left", fontSize: 11, fontFamily: "inherit" }}>
                 {cat}
               </button>
             ))}
@@ -1350,239 +1360,47 @@ export default function App() {
           )}
 
           {/* ── VIEWS (only when a person is selected) ── */}
-          {currentPerson && view === "dashboard" && (
-            <div style={{ animation: "slideIn 0.3s ease" }}>
-              {Object.keys(cumulativeSnapshot).length === 0 ? (
-                <div className="card" style={{ textAlign: "center", padding: 60 }}>
-                  <div style={{ fontSize: 48, marginBottom: 16 }}>🧬</div>
-                  <div style={{ fontSize: 18, color: "#8aabcc", marginBottom: 8, fontFamily: "Space Grotesk, sans-serif" }}>No bloodwork data yet</div>
-                  <div style={{ fontSize: 13, color: "#3a5a7a", marginBottom: 24 }}>Import a PDF or add manual entries to start tracking biomarkers</div>
-                  <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-                    <button className="btn btn-primary" onClick={() => { setImportTargetPersonId(selectedPerson); setShowImportModal(true); }}>📄 Import LAB results</button>
-                    <button className="btn btn-secondary" onClick={() => setShowManualEntry(true)}>+ Manual Entry</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {/* Status Summary — clickable */}
-                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: isMobile ? 8 : 12, marginBottom: 20 }}>
-                    {[
-                      { label: "Optimal", key: "optimal", count: counts.optimal, color: RANGE_COLORS.optimal, icon: "✓" },
-                      { label: "Sufficient", key: "sufficient", count: counts.sufficient, color: RANGE_COLORS.sufficient, icon: "~" },
-                      { label: "Elite", key: "elite", count: counts.elite, color: RANGE_COLORS.elite, icon: "★" },
-                      { label: "High", key: "high", count: counts.high, color: RANGE_COLORS.high, icon: "↑" },
-                      { label: "Low", key: "low", count: counts.low, color: RANGE_COLORS.low, icon: "↓" },
-                    ].map(item => (
-                      <div
-                        key={item.label}
-                        className="card"
-                        onClick={() => setStatusFilter(statusFilter === item.key ? null : item.key)}
-                        style={{ textAlign: "center", border: `1px solid ${statusFilter === item.key ? item.color : item.color + "22"}`, cursor: "pointer", background: statusFilter === item.key ? `${item.color}18` : undefined, transition: "all 0.2s" }}
-                        onMouseEnter={e => e.currentTarget.style.transform = "scale(1.03)"}
-                        onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
-                      >
-                        <div style={{ fontSize: 26, fontWeight: 700, color: item.color, fontFamily: "Space Grotesk, sans-serif" }}>{item.count}</div>
-                        <div style={{ fontSize: 10, color: "#4a6a8a", letterSpacing: 1 }}>{item.label.toUpperCase()}</div>
-                        {statusFilter === item.key && <div style={{ fontSize: 9, color: item.color, marginTop: 4, letterSpacing: 1 }}>CLICK TO CLEAR</div>}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-                    <div style={{ display: "flex", gap: 0, border: `1px solid ${themeColors.border}`, borderRadius: 8, overflow: "hidden" }}>
-                      <button type="button" onClick={() => setBiomarkersViewMode("cards")} style={{ padding: "6px 12px", fontSize: 11, border: "none", cursor: "pointer", background: biomarkersViewMode === "cards" ? themeColors.accent : "transparent", color: biomarkersViewMode === "cards" ? "#fff" : themeColors.textMuted }}>Cards</button>
-                      <button type="button" onClick={() => setBiomarkersViewMode("table")} style={{ padding: "6px 12px", fontSize: 11, border: "none", cursor: "pointer", background: biomarkersViewMode === "table" ? themeColors.accent : "transparent", color: biomarkersViewMode === "table" ? "#fff" : themeColors.textMuted }}>Table</button>
-                    </div>
-                  </div>
-
-                  {/* Filtered biomarker subset when a status card is clicked */}
-                  {statusFilter && (
-                    biomarkersViewMode === "cards" ? (
-                    <div className="card" style={{ marginBottom: 16, border: `1px solid ${statusFilter ? RANGE_COLORS[statusFilter] + "22" : "transparent"}` }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                        <div style={{ fontSize: 11, color: "#4a6a8a", letterSpacing: 2, fontWeight: 600 }}>
-                          {statusFilter.toUpperCase()} BIOMARKERS
-                          <span style={{ marginLeft: 10, color: "#3a5a7a", fontSize: 10, letterSpacing: 0, fontWeight: 400, textTransform: "none" }}>— most recent measurement per marker</span>
-                        </div>
-                        <button onClick={() => setStatusFilter(null)} style={{ background: "none", border: "none", color: "#5a7a9a", cursor: "pointer", fontSize: 14 }}>✕</button>
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
-{Object.entries(cumulativeSnapshot).filter(([name, { val }]) => {
-                            if (!allBiomarkers.includes(name)) return false;
-                            const s = getStatus(name, val);
-                            return statusFilter === "high" ? (s === "high" || s === "out-of-range") : s === statusFilter;
-                          }).map(([name, { val, date }]) => {
-                          const status = getStatus(name, val);
-                          const trend = getTrend(name);
-                          const isOld = latestEntry && date !== latestEntry.date;
-                          return (
-                            <div key={name} onClick={() => { setViewBeforeTrendDetail(view); setSelectedBiomarker(name); setView("trends"); }} style={{ padding: "12px 14px", borderRadius: 10, background: statusBg(status), border: `1px solid ${statusColor(status)}33`, cursor: "pointer", transition: "transform 0.15s" }}
-                              onMouseEnter={e => e.currentTarget.style.transform = "scale(1.02)"}
-                              onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
-                              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                                <span style={{ fontSize: 11, color: "#5a7a9a" }}>{name}</span>
-                                <span style={{ fontSize: 14 }}>{trend === "up" ? "↗" : trend === "down" ? "↘" : trend === "stable" ? "→" : ""}</span>
-                              </div>
-                              <div style={{ fontSize: 22, fontWeight: 700, color: statusColor(status), fontFamily: "Space Grotesk, sans-serif", lineHeight: 1.2, marginTop: 4 }}>{parseLabValue(val).display}</div>
-                              <div style={{ fontSize: 10, color: "#4a6a8a" }}>{BIOMARKER_DB[name]?.unit}</div>
-                              {isOld && <div style={{ fontSize: 9, color: "#3a5a7a", marginTop: 4 }}>as of {new Date(date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    ) : (
-                    <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                        <div style={{ fontSize: 11, color: "#4a6a8a", letterSpacing: 2, fontWeight: 600 }}>{statusFilter.toUpperCase()} BIOMARKERS</div>
-                        <button onClick={() => setStatusFilter(null)} style={{ background: "none", border: "none", color: "#5a7a9a", cursor: "pointer", fontSize: 14 }}>✕</button>
-                      </div>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                        <thead><tr style={{ borderBottom: `2px solid ${themeColors.border}` }}>
-                          {(["Biomarker", "Value", "Range", "Category"]).map(col => {
-                            const key = col.toLowerCase().replace(/\s+/g, ""); const k = key === "biomarker" ? "name" : key === "value" ? "value" : key === "range" ? "range" : "category";
-                            return (
-                              <th key={col} style={{ textAlign: k === "value" ? "right" : "left", padding: "10px 12px", color: themeColors.textDim, fontWeight: 600, minWidth: k === "range" ? (isMobile ? 100 : 180) : undefined, cursor: "pointer", userSelect: "none" }} onClick={() => setOverviewTableSort(prev => ({ by: k, dir: prev.by === k && prev.dir === "asc" ? "desc" : "asc" }))} title={`Sort by ${col}`}>
-                                {col} {overviewTableSort.by === k ? (overviewTableSort.dir === "asc" ? " ↑" : " ↓") : ""}
-                              </th>
-                            );
-                          })}
-                        </tr></thead>
-                        <tbody>
-                          {(() => {
-                            const STATUS_ORD = { optimal: 0, elite: 1, sufficient: 2, low: 3, high: 4, "out-of-range": 5, unknown: 6 };
-                            const filtered = Object.entries(cumulativeSnapshot).filter(([name, { val }]) => {
-                              const s = getStatus(name, val);
-                              return statusFilter === "high" ? (s === "high" || s === "out-of-range") : s === statusFilter;
-                            });
-                            const dir = overviewTableSort.dir === "asc" ? 1 : -1;
-                            const sorted = [...filtered].sort(([aName, aSnap], [bName, bSnap]) => {
-                              if (overviewTableSort.by === "name") return dir * aName.localeCompare(bName, undefined, { sensitivity: "base" });
-                              if (overviewTableSort.by === "value") return dir * ((parseLabValue(aSnap.val).numeric ?? 0) - (parseLabValue(bSnap.val).numeric ?? 0)) || dir * aName.localeCompare(bName);
-                              if (overviewTableSort.by === "range") return dir * ((STATUS_ORD[getStatus(aName, aSnap.val)] ?? 6) - (STATUS_ORD[getStatus(bName, bSnap.val)] ?? 6)) || dir * aName.localeCompare(bName);
-                              if (overviewTableSort.by === "category") return dir * ((BIOMARKER_DB[aName]?.category ?? "").localeCompare(BIOMARKER_DB[bName]?.category ?? "")) || dir * aName.localeCompare(bName);
-                              return 0;
-                            });
-                            return sorted.map(([name, { val }]) => {
-                            const b = BIOMARKER_DB[name];
-                            const status = getStatus(name, val);
-                            const { display: displayVal, numeric: numVal } = parseLabValue(val);
-                            const bar = buildRangeBar(b, numVal);
-                            return (
-                              <tr key={name} onClick={() => { setViewBeforeTrendDetail(view); setSelectedBiomarker(name); setView("trends"); }} style={{ borderBottom: `1px solid ${themeColors.border}`, cursor: "pointer" }}>
-                                <td style={{ padding: "10px 12px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>{b.icon} {name} <MonitorFrequencyBadge frequency={b.monitorFrequency} themeColors={themeColors} />{b.calculated && <span className="stat-pill" style={{ fontSize: 9, background: "rgba(0,229,160,0.15)", color: "#0ef" }}>Calculated</span>}</div>
-                                  {b.calculated && getCalculatedFrom(name).length > 0 && <div style={{ fontSize: 10, color: themeColors.textDim, marginTop: 2 }}>From: {getCalculatedFrom(name).join(", ")}</div>}
-                                </td>
-                                <td
-                                style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: statusColor(status) }}
-                                title={val === undefined && DERIVED_BIOMARKERS[name] ? (() => { const m = getMissingDerivedSources(name, cumulativeSnapshot); return m.length ? `Not calculated: missing ${m.join(", ")}` : undefined; })() : undefined}
-                              >{displayVal} {b.unit}</td>
-                                <td style={{ padding: "8px 12px" }}><RangeBarSegments segments={bar.segments} valuePos={bar.valuePos} height={24} /></td>
-                                <td style={{ padding: "10px 12px", color: themeColors.textDim }}>{b.category}</td>
-                              </tr>
-                            );
-                          });
-                          })()}
-                        </tbody>
-                      </table>
-                    </div>
-                    )
-                  )}
-
-                  {/* Latest Values by Category — uses cumulative snapshot */}
-                  {!statusFilter && (biomarkersViewMode === "cards" ? CATEGORIES.map(cat => {
-                    const catMarkers = allBiomarkers.filter(b => BIOMARKER_DB[b].category === cat && cumulativeSnapshot[b]);
-                    if (catMarkers.length === 0) return null;
-                    return (
-                      <div key={cat} className="card" style={{ marginBottom: 16 }}>
-                        <div style={{ fontSize: 11, color: "#4a6a8a", letterSpacing: 2, marginBottom: 14, fontWeight: 600 }}>{cat.toUpperCase()}</div>
-                        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
-                          {catMarkers.map(name => {
-                            const { val, date } = cumulativeSnapshot[name];
-                            const status = getStatus(name, val);
-                            const trend = getTrend(name);
-                            const isOld = latestEntry && date !== latestEntry.date;
-                            return (
-                              <div key={name} onClick={() => { setViewBeforeTrendDetail(view); setSelectedBiomarker(name); setView("trends"); }} style={{ padding: "12px 14px", borderRadius: 10, background: statusBg(status), border: `1px solid ${statusColor(status)}33`, cursor: "pointer", transition: "transform 0.15s", userSelect: "none" }}
-                                onMouseEnter={e => e.currentTarget.style.transform = "scale(1.02)"}
-                                onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                                  <span style={{ fontSize: 11, color: "#5a7a9a" }}>{name}</span>
-                                  <span style={{ fontSize: 14 }}>{trend === "up" ? "↗" : trend === "down" ? "↘" : trend === "stable" ? "→" : ""}</span>
-                                </div>
-                                {BIOMARKER_DB[name]?.monitorFrequency && <div style={{ marginTop: 4 }}><MonitorFrequencyBadge frequency={BIOMARKER_DB[name].monitorFrequency} themeColors={themeColors} /></div>}
-                                {BIOMARKER_DB[name]?.calculated && getCalculatedFrom(name).length > 0 && <div style={{ fontSize: 9, color: "#4a6a8a", marginTop: 2 }}>Calculated from: {getCalculatedFrom(name).join(", ")}</div>}
-                                <div style={{ fontSize: 22, fontWeight: 700, color: statusColor(status), fontFamily: "Space Grotesk, sans-serif", marginTop: 4 }}>{parseLabValue(val).display}</div>
-                                <div style={{ fontSize: 10, color: "#3a5a7a" }}>{BIOMARKER_DB[name]?.unit}</div>
-                                {isOld && <div style={{ fontSize: 9, color: "#3a5a7a", marginTop: 3 }}>as of {new Date(date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</div>}
-                                <div className="stat-pill" style={{ marginTop: 6, background: `${statusColor(status)}22`, color: statusColor(status), fontSize: 9 }}>
-                                  {status.toUpperCase()}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  }) : (
-                  <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                      <thead><tr style={{ borderBottom: `2px solid ${themeColors.border}` }}>
-                        {(["Biomarker", "Value", "Range", "Category"]).map(col => {
-                          const key = col.toLowerCase().replace(/\s+/g, ""); const k = key === "biomarker" ? "name" : key === "value" ? "value" : key === "range" ? "range" : "category";
-                          return (
-                            <th key={col} style={{ textAlign: k === "value" ? "right" : "left", padding: "10px 12px", color: themeColors.textDim, fontWeight: 600, minWidth: k === "range" ? (isMobile ? 100 : 180) : undefined, cursor: "pointer", userSelect: "none" }} onClick={() => setOverviewTableSort(prev => ({ by: k, dir: prev.by === k && prev.dir === "asc" ? "desc" : "asc" }))} title={`Sort by ${col}`}>
-                              {col} {overviewTableSort.by === k ? (overviewTableSort.dir === "asc" ? " ↑" : " ↓") : ""}
-                            </th>
-                          );
-                        })}
-                      </tr></thead>
-                      <tbody>
-                        {(() => {
-                          const STATUS_ORD = { optimal: 0, elite: 1, sufficient: 2, low: 3, high: 4, "out-of-range": 5, unknown: 6 };
-                          const filtered = Object.entries(cumulativeSnapshot).filter(([name]) => allBiomarkers.includes(name));
-                          const dir = overviewTableSort.dir === "asc" ? 1 : -1;
-                          const sorted = [...filtered].sort(([aName, aSnap], [bName, bSnap]) => {
-                            if (overviewTableSort.by === "name") return dir * aName.localeCompare(bName, undefined, { sensitivity: "base" });
-                            if (overviewTableSort.by === "value") return dir * ((parseLabValue(aSnap.val).numeric ?? 0) - (parseLabValue(bSnap.val).numeric ?? 0)) || dir * aName.localeCompare(bName);
-                            if (overviewTableSort.by === "range") return dir * ((STATUS_ORD[getStatus(aName, aSnap.val)] ?? 6) - (STATUS_ORD[getStatus(bName, bSnap.val)] ?? 6)) || dir * aName.localeCompare(bName);
-                            if (overviewTableSort.by === "category") return dir * ((BIOMARKER_DB[aName]?.category ?? "").localeCompare(BIOMARKER_DB[bName]?.category ?? "")) || dir * aName.localeCompare(bName);
-                            return 0;
-                          });
-                          return sorted.map(([name, { val }]) => {
-                            const b = BIOMARKER_DB[name];
-                            const status = getStatus(name, val);
-                            const { display: displayVal, numeric: numVal } = parseLabValue(val);
-                            const bar = buildRangeBar(b, numVal);
-                            return (
-                              <tr key={name} onClick={() => { setViewBeforeTrendDetail(view); setSelectedBiomarker(name); setView("trends"); }} style={{ borderBottom: `1px solid ${themeColors.border}`, cursor: "pointer" }}>
-                                <td style={{ padding: "10px 12px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>{b.icon} {name} <MonitorFrequencyBadge frequency={b.monitorFrequency} themeColors={themeColors} />{b.calculated && <span className="stat-pill" style={{ fontSize: 9, background: "rgba(0,229,160,0.15)", color: "#0ef" }}>Calculated</span>}</div>
-                                  {b.calculated && getCalculatedFrom(name).length > 0 && <div style={{ fontSize: 10, color: themeColors.textDim, marginTop: 2 }}>From: {getCalculatedFrom(name).join(", ")}</div>}
-                                </td>
-                                <td
-                                style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: statusColor(status) }}
-                                title={val === undefined && DERIVED_BIOMARKERS[name] ? (() => { const m = getMissingDerivedSources(name, cumulativeSnapshot); return m.length ? `Not calculated: missing ${m.join(", ")}` : undefined; })() : undefined}
-                              >{displayVal} {b.unit}</td>
-                                <td style={{ padding: "8px 12px" }}><RangeBarSegments segments={bar.segments} valuePos={bar.valuePos} height={24} /></td>
-                                <td style={{ padding: "10px 12px", color: themeColors.textDim }}>{b.category}</td>
-                              </tr>
-                            );
-                          });
-                        })()}
-                      </tbody>
-                    </table>
-                  </div>
-                  ))}
-                </>
-              )}
-            </div>
-          )}
-
           {/* ── BIOMARKERS VIEW ── */}
           {currentPerson && view === "biomarkers" && (
             <div style={{ animation: "slideIn 0.3s ease" }}>
+              {Object.keys(cumulativeSnapshot).length === 0 && (
+                <div className="card" style={{ textAlign: "center", padding: 40, marginBottom: 20 }}>
+                  <div style={{ fontSize: 36, marginBottom: 12 }}>🧬</div>
+                  <div style={{ fontSize: 16, color: "#8aabcc", marginBottom: 6, fontFamily: "Space Grotesk, sans-serif" }}>No bloodwork data yet</div>
+                  <div style={{ fontSize: 12, color: "#3a5a7a", marginBottom: 16 }}>Import a PDF or add manual entries — you can still browse all markers below.</div>
+                  <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+                    <button type="button" className="btn btn-primary" onClick={() => { setImportTargetPersonId(selectedPerson); setShowImportModal(true); }}>📄 Import LAB results</button>
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowManualEntry(true)}>+ Manual Entry</button>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: isMobile ? 8 : 12, marginBottom: 20 }}>
+                {[
+                  { label: "Optimal", key: "optimal", count: counts.optimal, color: RANGE_COLORS.optimal },
+                  { label: "Sufficient", key: "sufficient", count: counts.sufficient, color: RANGE_COLORS.sufficient },
+                  { label: "Elite", key: "elite", count: counts.elite, color: RANGE_COLORS.elite },
+                  { label: "High", key: "high", count: counts.high, color: RANGE_COLORS.high },
+                  { label: "Low", key: "low", count: counts.low, color: RANGE_COLORS.low },
+                ].map(item => (
+                  <div
+                    key={item.label}
+                    role="button"
+                    tabIndex={0}
+                    className="card"
+                    onClick={() => setStatusFilter(statusFilter === item.key ? null : item.key)}
+                    onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setStatusFilter(statusFilter === item.key ? null : item.key); } }}
+                    style={{ textAlign: "center", border: `1px solid ${statusFilter === item.key ? item.color : item.color + "22"}`, cursor: "pointer", background: statusFilter === item.key ? `${item.color}18` : undefined, transition: "all 0.2s" }}
+                    onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.03)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                  >
+                    <div style={{ fontSize: 26, fontWeight: 700, color: item.color, fontFamily: "Space Grotesk, sans-serif" }}>{item.count}</div>
+                    <div style={{ fontSize: 10, color: "#4a6a8a", letterSpacing: 1 }}>{item.label.toUpperCase()}</div>
+                    {statusFilter === item.key && <div style={{ fontSize: 9, color: item.color, marginTop: 4, letterSpacing: 1 }}>CLICK TO CLEAR</div>}
+                  </div>
+                ))}
+              </div>
+
               <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
                 <input placeholder="Search biomarkers..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{ maxWidth: 260 }} />
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1802,61 +1620,19 @@ export default function App() {
             </div>
           )}
 
-          {/* ── TRENDS VIEW ── */}
-          {currentPerson && view === "trends" && (
+          {/* Trend detail (opened from Biomarkers or History; no standalone Trends browse view) */}
+          {currentPerson && view === "trends" && selectedBiomarker && (
             <div style={{ animation: "slideIn 0.3s ease" }}>
-              {selectedBiomarker ? (
-                <TrendDetail name={selectedBiomarker} personEntries={personEntries} onBack={() => { setView(viewBeforeTrendDetail ?? "trends"); setSelectedBiomarker(null); setViewBeforeTrendDetail(null); }} themeColors={themeColors} />
-              ) : (
-                <>
-                  <div style={{ marginBottom: 20, color: "#5a7a9a", fontSize: 13 }}>Click on any biomarker to view its trend over time</div>
-                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
-                    {allBiomarkers.filter(name => {
-                      const vals = personEntries.map(e => e.biomarkers?.[name]).filter(v => v !== undefined);
-                      return vals.length > 0;
-                    }).map(name => {
-                      const vals = personEntries
-                        .filter(e => e.biomarkers?.[name] !== undefined)
-                        .map(e => {
-                          const p = parseLabValue(e.biomarkers[name]);
-                          return { date: e.date, value: p.numeric, displayValue: p.display };
-                        })
-                        .filter(p => !Number.isNaN(p.value));
-                      const status = getStatus(name, vals[vals.length - 1]?.value);
-                      return (
-                        <div key={name} className="card" style={{ cursor: "pointer" }} onClick={() => setSelectedBiomarker(name)}>
-                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-                            <span style={{ fontSize: 13, color: "#c8d8f0", fontFamily: "Space Grotesk, sans-serif", fontWeight: 500 }}>{BIOMARKER_DB[name].icon} {name}</span>
-                            <span className="stat-pill" style={{ background: `${statusColor(status)}22`, color: statusColor(status), fontSize: 9 }}>{status.toUpperCase()}</span>
-                          </div>
-                          <div style={{ height: 60 }}>
-                            <ResponsiveContainer width="100%" height="100%">
-                              <AreaChart data={vals} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-                                <defs>
-                                  <linearGradient id={`g-${name}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor={statusColor(status)} stopOpacity={0.3} />
-                                    <stop offset="95%" stopColor={statusColor(status)} stopOpacity={0} />
-                                  </linearGradient>
-                                </defs>
-                                <Area type="monotone" dataKey="value" stroke={statusColor(status)} strokeWidth={2} fill={`url(#g-${name})`} dot={false} />
-                              </AreaChart>
-                            </ResponsiveContainer>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11 }}>
-                            <span style={{ color: "#3a5a7a" }}>{vals.length} data points</span>
-                            <span style={{ color: statusColor(status), fontWeight: 600 }}>{vals[vals.length - 1]?.displayValue ?? vals[vals.length - 1]?.value} {BIOMARKER_DB[name].unit}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {personEntries.length === 0 && (
-                      <div className="card" style={{ gridColumn: "1/-1", textAlign: "center", padding: 60 }}>
-                        <div style={{ fontSize: 13, color: "#3a5a7a" }}>No biomarker data recorded yet. Import a PDF or add a manual entry.</div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
+              <TrendDetail
+                name={selectedBiomarker}
+                personEntries={personEntries}
+                onBack={() => {
+                  setView(viewBeforeTrendDetail ?? "biomarkers");
+                  setSelectedBiomarker(null);
+                  setViewBeforeTrendDetail(null);
+                }}
+                themeColors={themeColors}
+              />
             </div>
           )}
 
