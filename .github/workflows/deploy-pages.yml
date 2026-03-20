@@ -32,7 +32,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Optional: set repo secret VITE_WHOOP_API_PROXY to your Cloudflare Worker URL (see workers/whoop-proxy.js)
+      # so WHOOP token/API calls work from the browser on GitHub Pages (CORS).
       - name: Build
+        env:
+          VITE_WHOOP_API_PROXY: ${{ secrets.VITE_WHOOP_API_PROXY }}
         run: npm run build
 
       - name: Upload Pages artifact

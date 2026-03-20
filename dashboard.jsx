@@ -216,6 +216,10 @@ export default function App() {
   const [whoopSyncState, setWhoopSyncState] = useState({ status: "idle", message: "" });
   const whoopSettingsRef = useRef(whoopSettings);
   whoopSettingsRef.current = whoopSettings;
+  const peopleRef = useRef(people);
+  const entriesRef = useRef(entries);
+  peopleRef.current = people;
+  entriesRef.current = entries;
 
   const themeColors = THEME_COLORS[theme];
 
@@ -435,6 +439,11 @@ export default function App() {
     const { verifier, state: storedState, personId, redirectUri: storedRedirect } = readWhoopPkceSession();
     if (!verifier || !storedState || state !== storedState || !personId) return;
 
+    // Full page reload after WHOOP login resets React state to default (biomarkers). Put user back on Fitness.
+    setView("fitness");
+    setSelectedFitnessMarker(null);
+    setSelectedPerson(personId);
+
     let cancelled = false;
     (async () => {
       try {
@@ -478,10 +487,9 @@ export default function App() {
             },
           },
         };
-        await save(people, entries, { whoopSettingsOverride: nextWhoop });
+        await save(peopleRef.current, entriesRef.current, { whoopSettingsOverride: nextWhoop });
         setSelectedPerson(personId);
         setWhoopSyncState({ status: "ok", message: "WHOOP connected. Syncing your data…" });
-        setSelectedFitnessMarker(null);
         setView("fitness");
       } catch (e) {
         if (cancelled) return;
@@ -491,13 +499,21 @@ export default function App() {
           url.search = "";
           window.history.replaceState({}, "", url.toString());
         } catch (_) {}
-        setWhoopSyncState({ status: "error", message: e?.message || "WHOOP connection failed" });
+        const raw = e?.message || String(e) || "WHOOP connection failed";
+        const isNetwork =
+          /failed to fetch|networkerror|load failed|network request failed/i.test(raw) ||
+          (e && e.name === "TypeError");
+        const corsHint = isNetwork
+          ? " Browsers block direct calls to WHOOP from static sites (CORS). Build with VITE_WHOOP_API_PROXY set to your deployed proxy (see workers/whoop-proxy.js in the repo)."
+          : "";
+        setWhoopSyncState({ status: "error", message: raw + corsHint });
+        setView("fitness");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [loading, people, entries]);
+  }, [loading]);
 
   useEffect(() => {
     if (view !== "fitness") return;

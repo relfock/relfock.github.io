@@ -15,12 +15,25 @@ export function getWhoopApiRoot() {
   return "https://api.prod.whoop.com";
 }
 
+/**
+ * Absolute URL for WHOOP paths (/oauth/..., /developer/...). Required for fetch() when the proxy root is
+ * a site-relative path (e.g. /api/whoop) and for token exchange on static hosts (see VITE_WHOOP_API_PROXY).
+ */
+export function buildWhoopApiUrl(path) {
+  const root = (getWhoopApiRoot() || "").replace(/\/$/, "");
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const joined = `${root}${p}`;
+  if (/^https?:\/\//i.test(joined)) return joined;
+  if (typeof window === "undefined") return joined;
+  return new URL(joined.startsWith("/") ? joined : `/${joined}`, window.location.origin).href;
+}
+
 export function getWhoopDeveloperBase() {
-  return `${getWhoopApiRoot()}/developer`;
+  return buildWhoopApiUrl("/developer");
 }
 
 export function getWhoopTokenUrl() {
-  return `${getWhoopApiRoot()}/oauth/oauth2/token`;
+  return buildWhoopApiUrl("/oauth/oauth2/token");
 }
 
 /** Scopes for recovery, sleep, strain, workouts, profile, body + refresh token */
@@ -65,6 +78,10 @@ const PKCE_REDIRECT_KEY = "whoop_oauth_redirect_uri";
  * Default redirect when the user has not set an explicit URI in settings.
  * Normalizes away ?code=… / hash and trailing index.html so it matches typical GitHub Pages + SPA setups.
  * WHOOP compares redirect_uri as an exact string — if this still doesn’t match, set an explicit URI in the app.
+ *
+ * For the **site root** (path `/` only), returns `origin` with **no trailing slash** (e.g. `https://user.github.io`).
+ * That matches how most users register OAuth redirect URLs (browser bar + WHOOP dashboard) and avoids
+ * mismatch with `https://user.github.io/` (slash vs no slash).
  */
 export function resolveWhoopRedirectUri() {
   if (typeof window === "undefined") return "";
@@ -74,8 +91,23 @@ export function resolveWhoopRedirectUri() {
   let path = u.pathname || "/";
   if (path.endsWith("/index.html")) path = path.slice(0, -"index.html".length) || "/";
   if (path === "") path = "/";
-  if (path === "/") return `${u.origin}/`;
+  if (path === "/") return u.origin;
   return `${u.origin}${path}`;
+}
+
+/**
+ * Normalize a redirect URI string so site-root URLs use one canonical form (origin only, no trailing slash).
+ */
+export function canonicalWhoopRedirectUri(uri) {
+  const s = (uri || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    if (u.pathname === "/" && !u.search && !u.hash) return u.origin;
+    return u.href;
+  } catch {
+    return s;
+  }
 }
 
 /**
@@ -84,10 +116,10 @@ export function resolveWhoopRedirectUri() {
  */
 export function getWhoopRedirectUri(explicitOverride) {
   const t = (explicitOverride || "").trim();
-  if (t) return t;
+  if (t) return canonicalWhoopRedirectUri(t);
   const env = (import.meta.env.VITE_WHOOP_REDIRECT_URI || "").trim();
-  if (env) return env;
-  return resolveWhoopRedirectUri();
+  if (env) return canonicalWhoopRedirectUri(env);
+  return canonicalWhoopRedirectUri(resolveWhoopRedirectUri());
 }
 
 /**
