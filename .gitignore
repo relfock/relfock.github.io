@@ -6,4 +6,4 @@ groq
 .env
 .env.local
 env_local
-data/
+/data/

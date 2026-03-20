@@ -102,6 +102,12 @@ export default defineConfig(({ mode }) => {
           proxyTimeout: 120000,
           rewrite: (path) => path.replace(/^\/api\/ollama/, ""),
         },
+        "/api/whoop": {
+          target: "https://api.prod.whoop.com",
+          changeOrigin: true,
+          proxyTimeout: 120000,
+          rewrite: (path) => path.replace(/^\/api\/whoop/, ""),
+        },
       },
     },
   };

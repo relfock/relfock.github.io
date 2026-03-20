@@ -92,7 +92,7 @@ export async function readDataFile(accessToken, fileId) {
     throw new Error(res.status === 401 ? "Token expired or invalid" : `Drive read failed: ${res.status} ${err}`);
   }
   const text = await res.text();
-  if (!text.trim()) return { people: [], entries: {}, settings: {} };
+  if (!text.trim()) return { people: [], entries: {}, settings: {}, whoopCache: {} };
   try {
     return JSON.parse(text);
   } catch {
@@ -147,10 +147,11 @@ export async function getOrCreateAppData(accessToken) {
         people: Array.isArray(data.people) ? data.people : [],
         entries: data.entries && typeof data.entries === "object" ? data.entries : {},
         settings: data.settings && typeof data.settings === "object" ? data.settings : {},
+        whoopCache: data.whoopCache && typeof data.whoopCache === "object" ? data.whoopCache : {},
       },
     };
   }
-  const payload = { people: [], entries: {}, settings: {} };
+  const payload = { people: [], entries: {}, settings: {}, whoopCache: {} };
   const { id } = await createDataFile(accessToken, payload);
   return { fileId: id, data: payload };
 }

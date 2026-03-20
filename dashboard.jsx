@@ -22,6 +22,23 @@ import { INIT_PEOPLE, THEME_STORAGE_KEY, THEME_COLORS } from "./src/constants/th
 import { MonitorFrequencyBadge } from "./src/components/MonitorFrequencyBadge.jsx";
 import { buildRangeBar, RangeBarSegments } from "./src/components/RangeBar.jsx";
 import { TrendDetail } from "./src/components/TrendDetail.jsx";
+import { FitnessWhoopView } from "./src/components/FitnessWhoopView.jsx";
+import { WhoopTrendDetail } from "./src/components/WhoopTrendDetail.jsx";
+import {
+  buildWhoopAuthorizeUrl,
+  clearWhoopPkceSession,
+  createPkcePair,
+  exchangeWhoopCode,
+  ensureWhoopAccessToken,
+  getWhoopRedirectUri,
+  mergeWhoopSnapshot,
+  normalizeWhoopSettings,
+  resolveWhoopRedirectUri,
+  randomState,
+  readWhoopPkceSession,
+  storeWhoopPkceSession,
+  syncWhoopDataset,
+} from "./src/lib/whoop.js";
 import { parseNorwegianAnalysehistorikk } from "./src/parsers/norwegian.js";
 import { nameAndSurnameMatch, AI_PROVIDERS, AI_PROVIDER_FREE_TIER } from "./src/lib/importHelpers.js";
 import { pdfToImages } from "./src/lib/pdfUtils.js";
@@ -41,13 +58,21 @@ function apiKeysFromBackupData(data) {
       const kk = String(k).toLowerCase();
       const s = v == null ? "" : String(v).trim();
       if (!s) continue;
-      if (kk === "gemini" || kk === "vite_gemini_api_key") set("gemini", s);
-      else if (kk === "anthropic" || kk === "vite_anthropic_api_key") set("anthropic", s);
-      else if (kk === "openai" || kk === "vite_openai_api_key") set("openai", s);
+      if (kk === "gemini" || kk === "vite_gemini_api_key" || kk === "google_ai" || kk === "google") set("gemini", s);
+      else if (kk === "anthropic" || kk === "vite_anthropic_api_key" || kk === "claude") set("anthropic", s);
+      else if (kk === "openai" || kk === "vite_openai_api_key" || kk === "chatgpt") set("openai", s);
       else if (kk === "groq" || kk === "vite_groq_api_key") set("groq", s);
     }
   };
-  let st = data?.settings;
+  /** Direct copy of known provider keys (handles exact keys from our export). */
+  const mergeProviderBlock = (block) => {
+    if (!block || typeof block !== "object" || Array.isArray(block)) return;
+    for (const p of ["gemini", "anthropic", "openai", "groq"]) {
+      if (block[p] != null && String(block[p]).trim()) set(p, block[p]);
+    }
+  };
+
+  let st = data?.settings ?? data?.Settings;
   if (typeof st === "string") {
     try {
       st = JSON.parse(st);
@@ -56,6 +81,9 @@ function apiKeysFromBackupData(data) {
     }
   }
   if (st && typeof st === "object" && !Array.isArray(st)) {
+    mergeProviderBlock(st.apiKeys);
+    mergeProviderBlock(st.APIKeys);
+    mergeProviderBlock(st.api_keys);
     fromObj(st.apiKeys);
     fromObj(st.APIKeys);
     fromObj(st.api_keys);
@@ -69,6 +97,45 @@ function apiKeysFromBackupData(data) {
   return out;
 }
 
+/** Merge WHOOP OAuth settings from backup JSON (settings.whoop, whoopSettings, or flat keys). */
+function whoopFromBackupData(data) {
+  let st = data?.settings;
+  if (typeof st === "string") {
+    try {
+      st = JSON.parse(st);
+    } catch {
+      st = null;
+    }
+  }
+  let w = st?.whoop;
+  if (typeof w === "string") {
+    try {
+      w = JSON.parse(w);
+    } catch {
+      w = null;
+    }
+  }
+  if (w && typeof w === "object" && !Array.isArray(w)) {
+    return normalizeWhoopSettings(w);
+  }
+  if (data?.whoopSettings && typeof data.whoopSettings === "object" && !Array.isArray(data.whoopSettings)) {
+    return normalizeWhoopSettings(data.whoopSettings);
+  }
+  const flat = {
+    clientId: data?.whoopClientId ?? data?.VITE_WHOOP_CLIENT_ID,
+    clientSecret: data?.whoopClientSecret ?? data?.VITE_WHOOP_CLIENT_SECRET,
+    redirectUri: data?.whoopRedirectUri ?? data?.VITE_WHOOP_REDIRECT_URI,
+  };
+  const hasFlat = [flat.clientId, flat.clientSecret, flat.redirectUri].some((x) => x != null && String(x).trim() !== "");
+  if (hasFlat) {
+    return normalizeWhoopSettings({
+      ...flat,
+      tokensByPersonId: {},
+    });
+  }
+  return normalizeWhoopSettings(null);
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [people, setPeople] = useState(INIT_PEOPLE);
@@ -76,6 +143,7 @@ export default function App() {
   const [entries, setEntries] = useState({});
   const [view, setView] = useState("biomarkers");
   const [selectedBiomarker, setSelectedBiomarker] = useState(null);
+  const [selectedFitnessMarker, setSelectedFitnessMarker] = useState(null);
   const [viewBeforeTrendDetail, setViewBeforeTrendDetail] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importTargetPersonId, setImportTargetPersonId] = useState(null);
@@ -99,6 +167,7 @@ export default function App() {
   const [showApiKeysModal, setShowApiKeysModal] = useState(false);
   const [apiKeysDraft, setApiKeysDraft] = useState({});
   const [apiKeyVisible, setApiKeyVisible] = useState({});
+  const [whoopClientSecretVisible, setWhoopClientSecretVisible] = useState(false);
   const [backupImportMessage, setBackupImportMessage] = useState(null);
   const importBackupInputRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -140,6 +209,13 @@ export default function App() {
     if (typeof window === "undefined") return "dark";
     return (localStorage.getItem(THEME_STORAGE_KEY) || "dark");
   });
+
+  const [whoopSettings, setWhoopSettings] = useState(() => normalizeWhoopSettings(null));
+  const [whoopCache, setWhoopCache] = useState({});
+  const [whoopCredentialsDraft, setWhoopCredentialsDraft] = useState({ clientId: "", clientSecret: "", redirectUri: "" });
+  const [whoopSyncState, setWhoopSyncState] = useState({ status: "idle", message: "" });
+  const whoopSettingsRef = useRef(whoopSettings);
+  whoopSettingsRef.current = whoopSettings;
 
   const themeColors = THEME_COLORS[theme];
 
@@ -219,6 +295,8 @@ export default function App() {
             setPeople(data.people);
             setEntries(data.entries);
             setApiKeysFromDrive(data.settings?.apiKeys || {});
+            setWhoopSettings(normalizeWhoopSettings(data.settings?.whoop));
+            setWhoopCache(data.whoopCache && typeof data.whoopCache === "object" ? data.whoopCache : {});
             setDriveStatus("connected");
             setDriveLoadError(null);
             if (data.people?.length) setSelectedPerson(data.people[0].id);
@@ -254,6 +332,14 @@ export default function App() {
           const parsedEntries = JSON.parse(en.value);
           setEntries(parsedEntries && typeof parsedEntries === "object" ? parsedEntries : {});
         }
+        const wh = await storage.get("bloodwork-whoop");
+        if (wh?.value) {
+          try {
+            const o = JSON.parse(wh.value);
+            setWhoopSettings(normalizeWhoopSettings(o.settings));
+            if (o.cache && typeof o.cache === "object") setWhoopCache(o.cache);
+          } catch (_) {}
+        }
         const storedKeys = typeof localStorage !== "undefined" ? localStorage.getItem("biotracker-api-keys") : null;
         if (storedKeys) {
           try {
@@ -275,19 +361,31 @@ export default function App() {
 
   // Save: Drive when connected, otherwise localStorage only. No server; data stays local or in your Drive.
   // options.apiKeysOverride: when saving from API keys modal, pass the new keys.
+  // options.whoopSettingsOverride / whoopCacheOverride: optional WHOOP persistence.
   const save = async (newPeople, newEntries, options = {}) => {
     setSaveError(null);
     const keysToSave = options.apiKeysOverride ?? apiKeysFromDrive;
+    const nextWhoop = options.whoopSettingsOverride !== undefined ? options.whoopSettingsOverride : whoopSettings;
+    const nextWhoopCache = options.whoopCacheOverride !== undefined ? options.whoopCacheOverride : whoopCache;
 
     if (driveToken && driveFileId) {
       try {
         await updateDataFile(driveToken, driveFileId, {
           people: newPeople,
           entries: newEntries,
-          settings: { apiKeys: keysToSave },
+          settings: { apiKeys: keysToSave, whoop: nextWhoop },
+          whoopCache: nextWhoopCache,
         });
         setPeople(newPeople);
         setEntries(newEntries);
+        setWhoopSettings(nextWhoop);
+        setWhoopCache(nextWhoopCache);
+        setApiKeysFromDrive(keysToSave);
+        if (typeof localStorage !== "undefined") {
+          try {
+            localStorage.setItem("biotracker-api-keys", JSON.stringify(keysToSave));
+          } catch (_) {}
+        }
         setSaveError(null);
       } catch (e) {
         const msg = e?.message || "Drive save failed";
@@ -308,8 +406,11 @@ export default function App() {
     try {
       await storage.set("bloodwork-people", JSON.stringify(newPeople));
       await storage.set("bloodwork-entries", JSON.stringify(newEntries));
+      await storage.set("bloodwork-whoop", JSON.stringify({ settings: nextWhoop, cache: nextWhoopCache }));
       setPeople(newPeople);
       setEntries(newEntries);
+      setWhoopSettings(nextWhoop);
+      setWhoopCache(nextWhoopCache);
       if (options.apiKeysOverride != null) {
         setApiKeysFromDrive(options.apiKeysOverride);
         if (typeof localStorage !== "undefined") {
@@ -324,6 +425,88 @@ export default function App() {
     }
   };
 
+  /** OAuth return: ?code=&state= (Redirect URL must match this page URL exactly) */
+  useEffect(() => {
+    if (loading || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code || !state) return;
+    const { verifier, state: storedState, personId, redirectUri: storedRedirect } = readWhoopPkceSession();
+    if (!verifier || !storedState || state !== storedState || !personId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        let ws = { ...normalizeWhoopSettings(whoopSettingsRef.current) };
+        if (!ws.clientId) {
+          try {
+            const raw = localStorage.getItem("bloodwork-whoop");
+            if (raw) {
+              const o = JSON.parse(raw);
+              ws = { ...ws, ...normalizeWhoopSettings(o.settings) };
+            }
+          } catch (_) {}
+        }
+        const clientId = (ws.clientId || import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim();
+        const clientSecret = (ws.clientSecret || import.meta.env.VITE_WHOOP_CLIENT_SECRET || "").trim();
+        if (!clientId) throw new Error("Missing WHOOP Client ID — add it in Settings → API keys & WHOOP, then try Connect again.");
+        const redirectUri =
+          (storedRedirect && String(storedRedirect).trim()) || getWhoopRedirectUri(ws.redirectUri);
+        const tokens = await exchangeWhoopCode({
+          code,
+          redirectUri,
+          clientId,
+          codeVerifier: verifier,
+          clientSecret: clientSecret || undefined,
+        });
+        if (cancelled) return;
+        clearWhoopPkceSession();
+        const url = new URL(window.location.href);
+        url.search = "";
+        window.history.replaceState({}, "", url.toString());
+
+        const expiresAtMs = Date.now() + (Number(tokens.expires_in) || 3600) * 1000;
+        const nextWhoop = {
+          ...ws,
+          tokensByPersonId: {
+            ...ws.tokensByPersonId,
+            [personId]: {
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token || "",
+              expiresAtMs,
+            },
+          },
+        };
+        await save(people, entries, { whoopSettingsOverride: nextWhoop });
+        setSelectedPerson(personId);
+        setWhoopSyncState({ status: "ok", message: "WHOOP connected. Syncing your data…" });
+        setSelectedFitnessMarker(null);
+        setView("fitness");
+      } catch (e) {
+        if (cancelled) return;
+        clearWhoopPkceSession();
+        try {
+          const url = new URL(window.location.href);
+          url.search = "";
+          window.history.replaceState({}, "", url.toString());
+        } catch (_) {}
+        setWhoopSyncState({ status: "error", message: e?.message || "WHOOP connection failed" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, people, entries]);
+
+  useEffect(() => {
+    if (view !== "fitness") return;
+    setWhoopCredentialsDraft({
+      clientId: whoopSettings.clientId || (import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim(),
+      clientSecret: whoopSettings.clientSecret || "",
+      redirectUri: whoopSettings.redirectUri || "",
+    });
+  }, [view, whoopSettings.clientId, whoopSettings.clientSecret, whoopSettings.redirectUri]);
 
   const addEntry = (personId, date, biomarkers, extractedName = null, extractedNameEnglish = null, importedFile = null) => {
     const newEntries = {
@@ -371,12 +554,168 @@ export default function App() {
     const newPeople = people.filter(p => p.id !== personId);
     const newEntries = { ...entries };
     delete newEntries[personId];
+    const nextWhoop = {
+      ...whoopSettings,
+      tokensByPersonId: { ...whoopSettings.tokensByPersonId },
+    };
+    delete nextWhoop.tokensByPersonId[personId];
+    const nextWhoopCache = { ...whoopCache };
+    delete nextWhoopCache[personId];
     setPeople(newPeople);
     setEntries(newEntries);
-    save(newPeople, newEntries);
+    setWhoopSettings(nextWhoop);
+    setWhoopCache(nextWhoopCache);
+    save(newPeople, newEntries, { whoopSettingsOverride: nextWhoop, whoopCacheOverride: nextWhoopCache });
     if (selectedPerson === personId) setSelectedPerson(newPeople[0]?.id || null);
     setConfirmDeletePerson(null);
   };
+
+  const whoopCacheRef = useRef(whoopCache);
+  whoopCacheRef.current = whoopCache;
+
+  const runWhoopSync = async (quiet = false) => {
+    if (!selectedPerson) return;
+    const ws = whoopSettingsRef.current;
+    const tokenRec = ws.tokensByPersonId?.[selectedPerson];
+    if (!tokenRec?.accessToken && !tokenRec?.refreshToken) return;
+    if (!quiet) setWhoopSyncState((prev) => (prev.status === "loading" ? prev : { status: "loading", message: "" }));
+    try {
+      const clientId = (ws.clientId || import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim();
+      const clientSecret = (ws.clientSecret || import.meta.env.VITE_WHOOP_CLIENT_SECRET || "").trim();
+      if (!clientId) throw new Error("Missing WHOOP Client ID");
+      const fresh = await ensureWhoopAccessToken(
+        {
+          accessToken: tokenRec.accessToken,
+          refreshToken: tokenRec.refreshToken,
+          expiresAtMs: tokenRec.expiresAtMs,
+        },
+        clientId,
+        clientSecret || undefined
+      );
+      const nextWhoop = {
+        ...ws,
+        tokensByPersonId: {
+          ...ws.tokensByPersonId,
+          [selectedPerson]: {
+            accessToken: fresh.accessToken,
+            refreshToken: fresh.refreshToken,
+            expiresAtMs: fresh.expiresAtMs,
+          },
+        },
+      };
+      const prevSnap = whoopCacheRef.current[selectedPerson];
+      const incremental = quiet && Boolean(prevSnap?.syncedAt);
+      const syncOpts = incremental
+        ? { startIso: new Date(Date.now() - 90 * 86400000).toISOString(), maxPages: 120 }
+        : { startIso: null, maxPages: 500 };
+      const incoming = await syncWhoopDataset(fresh.accessToken, syncOpts);
+      const data = mergeWhoopSnapshot(prevSnap, incoming);
+      const nextCache = { ...whoopCacheRef.current, [selectedPerson]: data };
+      await save(people, entries, { whoopSettingsOverride: nextWhoop, whoopCacheOverride: nextCache });
+      if (!quiet) setWhoopSyncState({ status: "ok", message: "Synced successfully." });
+    } catch (e) {
+      if (!quiet) setWhoopSyncState({ status: "error", message: e?.message || "Sync failed" });
+    }
+  };
+
+  const beginWhoopOAuth = async () => {
+    setWhoopSyncState({ status: "idle", message: "" });
+    const clientId = (
+      whoopCredentialsDraft.clientId.trim() ||
+      whoopSettings.clientId.trim() ||
+      import.meta.env.VITE_WHOOP_CLIENT_ID ||
+      ""
+    ).trim();
+    if (!clientId) {
+      setWhoopSyncState({
+        status: "error",
+        message: "Enter and save a WHOOP Client ID (or set VITE_WHOOP_CLIENT_ID for builds).",
+      });
+      return;
+    }
+    if (!selectedPerson) return;
+    try {
+      const { verifier, challenge } = await createPkcePair();
+      const state = randomState();
+      const redirectUri = getWhoopRedirectUri((whoopCredentialsDraft.redirectUri || whoopSettings.redirectUri).trim());
+      if (!redirectUri) {
+        setWhoopSyncState({ status: "error", message: "Could not determine redirect URI for OAuth." });
+        return;
+      }
+      storeWhoopPkceSession(verifier, state, selectedPerson, redirectUri);
+      window.location.assign(buildWhoopAuthorizeUrl({ clientId, redirectUri, state, codeChallenge: challenge }));
+    } catch (e) {
+      setWhoopSyncState({ status: "error", message: e?.message || "Could not start WHOOP login" });
+    }
+  };
+
+  const disconnectWhoop = () => {
+    if (!selectedPerson) return;
+    const next = {
+      ...whoopSettings,
+      tokensByPersonId: { ...whoopSettings.tokensByPersonId },
+    };
+    delete next.tokensByPersonId[selectedPerson];
+    setWhoopSyncState({ status: "idle", message: "" });
+    save(people, entries, { whoopSettingsOverride: next });
+  };
+
+  const openApiKeysModal = useCallback(() => {
+    setApiKeysDraft({
+      gemini: apiKeysFromDrive.gemini ?? "",
+      anthropic: apiKeysFromDrive.anthropic ?? "",
+      openai: apiKeysFromDrive.openai ?? "",
+      groq: apiKeysFromDrive.groq ?? "",
+    });
+    setWhoopCredentialsDraft({
+      clientId: whoopSettings.clientId || (import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim(),
+      clientSecret: whoopSettings.clientSecret || "",
+      redirectUri: whoopSettings.redirectUri || "",
+    });
+    setWhoopClientSecretVisible(false);
+    setApiKeyVisible({});
+    setShowApiKeysModal(true);
+  }, [apiKeysFromDrive, whoopSettings]);
+
+  const whoopEffectiveRedirectUri = getWhoopRedirectUri((whoopCredentialsDraft.redirectUri || whoopSettings.redirectUri).trim());
+
+  const runWhoopSyncRef = useRef(runWhoopSync);
+  runWhoopSyncRef.current = runWhoopSync;
+
+  useEffect(() => {
+    if (view !== "fitness") setSelectedFitnessMarker(null);
+  }, [view]);
+
+  useEffect(() => {
+    setSelectedFitnessMarker(null);
+  }, [selectedPerson]);
+
+  const whoopAutoFetchRef = useRef({});
+  useEffect(() => {
+    if (view !== "fitness") {
+      whoopAutoFetchRef.current = {};
+      return;
+    }
+    if (!selectedPerson || loading) return;
+    const tokenRec = whoopSettingsRef.current.tokensByPersonId?.[selectedPerson];
+    if (!tokenRec?.refreshToken && !tokenRec?.accessToken) return;
+    const c = whoopCacheRef.current[selectedPerson];
+    if (c?.syncedAt) return;
+    if (whoopAutoFetchRef.current[selectedPerson]) return;
+    whoopAutoFetchRef.current[selectedPerson] = true;
+    void runWhoopSync(true);
+  }, [view, selectedPerson, loading]);
+
+  /** Background refresh while Fitness tab is open (keeps data fresh without blocking UI). */
+  useEffect(() => {
+    if (view !== "fitness" || !selectedPerson) return;
+    const tok = whoopSettingsRef.current.tokensByPersonId?.[selectedPerson];
+    if (!tok?.refreshToken && !tok?.accessToken) return;
+    const id = window.setInterval(() => {
+      void runWhoopSyncRef.current(true);
+    }, 15 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [view, selectedPerson]);
 
   const currentPerson = people.find(p => p.id === selectedPerson);
   const personEntries = entries[selectedPerson] || [];
@@ -895,6 +1234,8 @@ export default function App() {
         setPeople(data.people);
         setEntries(data.entries);
         setApiKeysFromDrive(data.settings?.apiKeys || {});
+        setWhoopSettings(normalizeWhoopSettings(data.settings?.whoop));
+        setWhoopCache(data.whoopCache && typeof data.whoopCache === "object" ? data.whoopCache : {});
         setDriveStatus("connected");
         setDriveLoadError(null);
         if (data.people?.length) setSelectedPerson(data.people[0].id);
@@ -1014,17 +1355,21 @@ export default function App() {
             const parsedEntries = data.entries && typeof data.entries === "object" ? data.entries : {};
             const keysObj = apiKeysFromBackupData(data);
             const hasAnyKey = Object.values(keysObj).some((v) => v && String(v).trim());
-            setPeople(parsedPeople);
-            setEntries(parsedEntries);
-            setApiKeysFromDrive(keysObj);
+            const importedWhoop = whoopFromBackupData(data);
+            const importedWhoopCache = data.whoopCache && typeof data.whoopCache === "object" ? data.whoopCache : {};
+            const hasWhoop =
+              Object.keys(importedWhoop.tokensByPersonId || {}).length > 0 ||
+              !!(importedWhoop.clientId || importedWhoop.clientSecret || importedWhoop.redirectUri) ||
+              Object.keys(importedWhoopCache).length > 0;
+            await save(parsedPeople, parsedEntries, {
+              apiKeysOverride: keysObj,
+              whoopSettingsOverride: importedWhoop,
+              whoopCacheOverride: importedWhoopCache,
+            });
             setSelectedPerson(parsedPeople[0]?.id ?? null);
-            if (typeof localStorage !== "undefined") {
-              try {
-                localStorage.setItem("biotracker-api-keys", JSON.stringify(keysObj));
-              } catch (_) {}
-            }
-            await save(parsedPeople, parsedEntries, { apiKeysOverride: keysObj });
-            setBackupImportMessage(`Imported ${parsedPeople.length} person(s), ${Object.keys(parsedEntries).length} profile(s) of entries${hasAnyKey ? ", and API keys" : ""}.`);
+            setBackupImportMessage(
+              `Imported ${parsedPeople.length} person(s), ${Object.keys(parsedEntries).length} profile(s) of entries${hasAnyKey ? ", and API keys" : ""}${hasWhoop ? ", and WHOOP data" : ""}.`
+            );
             setTimeout(() => setBackupImportMessage(null), 5000);
           } catch (err) {
             setBackupImportMessage(err?.message || "Invalid backup file");
@@ -1203,7 +1548,14 @@ export default function App() {
                           })),
                         ])
                       );
-                      const payload = { people, entries: entriesWithFiles, settings: { apiKeys: apiKeysFromDrive }, exportedAt: new Date().toISOString(), version: 1 };
+                      const payload = {
+                        people,
+                        entries: entriesWithFiles,
+                        settings: { apiKeys: apiKeysFromDrive, whoop: whoopSettings },
+                        whoopCache,
+                        exportedAt: new Date().toISOString(),
+                        version: 1,
+                      };
                       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
                       const a = document.createElement("a");
                       a.href = URL.createObjectURL(blob);
@@ -1245,18 +1597,11 @@ export default function App() {
                     className="btn btn-secondary"
                     style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
                     onClick={() => {
-                      setApiKeysDraft({
-                        gemini: apiKeysFromDrive.gemini ?? "",
-                        anthropic: apiKeysFromDrive.anthropic ?? "",
-                        openai: apiKeysFromDrive.openai ?? "",
-                        groq: apiKeysFromDrive.groq ?? "",
-                      });
-                      setApiKeyVisible({});
-                      setShowApiKeysModal(true);
+                      openApiKeysModal();
                       setShowSettingsMenu(false);
                     }}
                   >
-                    🔑 API keys{driveStatus === "connected" ? " (Drive)" : ""}
+                    🔑 API keys & WHOOP{driveStatus === "connected" ? " (Drive)" : ""}
                   </button>
                   <button
                     className="btn btn-danger"
@@ -1271,15 +1616,18 @@ export default function App() {
                     style={{ display: "block", width: "100%", justifyContent: "flex-start", fontSize: 12, marginTop: 8 }}
                     onClick={() => {
                       setShowSettingsMenu(false);
-                      if (!window.confirm("Clear all people, entries, and API keys from this device? You can load them again by importing a backup.")) return;
+                      if (!window.confirm("Clear all people, entries, API keys, and WHOOP data from this device? You can load them again by importing a backup.")) return;
                       if (typeof localStorage !== "undefined") {
                         localStorage.removeItem("bloodwork-people");
                         localStorage.removeItem("bloodwork-entries");
+                        localStorage.removeItem("bloodwork-whoop");
                         localStorage.removeItem("biotracker-api-keys");
                       }
                       setPeople(INIT_PEOPLE);
                       setEntries({});
                       setApiKeysFromDrive({});
+                      setWhoopSettings(normalizeWhoopSettings(null));
+                      setWhoopCache({});
                       setSelectedPerson(null);
                       setSaveError(null);
                     }}
@@ -1333,6 +1681,10 @@ export default function App() {
           <button type="button" onClick={() => { setSelectedBiomarker(null); setViewBeforeTrendDetail(null); setView("biomarkers"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: navBiomarkersActive ? `${themeColors.accent}14` : "transparent", color: navBiomarkersActive ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
             <span style={{ fontSize: 16 }}>⬡</span>
             Biomarkers
+          </button>
+          <button type="button" onClick={() => { setSelectedBiomarker(null); setSelectedFitnessMarker(null); setViewBeforeTrendDetail(null); setView("fitness"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: view === "fitness" ? `${themeColors.accent}14` : "transparent", color: view === "fitness" ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
+            <span style={{ fontSize: 16 }}>◎</span>
+            Fitness
           </button>
           <button type="button" onClick={() => { setSelectedBiomarker(null); setViewBeforeTrendDetail(null); setView("history"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: navHistoryActive ? `${themeColors.accent}14` : "transparent", color: navHistoryActive ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
             <span style={{ fontSize: 16 }}>◧</span>
@@ -1634,6 +1986,34 @@ export default function App() {
                 themeColors={themeColors}
               />
             </div>
+          )}
+
+          {/* ── FITNESS (WHOOP) VIEW ── */}
+          {currentPerson && view === "fitness" && selectedFitnessMarker && (
+            <WhoopTrendDetail
+              markerId={selectedFitnessMarker}
+              cache={whoopCache[selectedPerson] || null}
+              onBack={() => setSelectedFitnessMarker(null)}
+              themeColors={themeColors}
+            />
+          )}
+          {currentPerson && view === "fitness" && !selectedFitnessMarker && (
+            <FitnessWhoopView
+              themeColors={themeColors}
+              cache={whoopCache[selectedPerson] || null}
+              connected={Boolean(
+                whoopSettings.tokensByPersonId?.[selectedPerson]?.refreshToken ||
+                  whoopSettings.tokensByPersonId?.[selectedPerson]?.accessToken
+              )}
+              syncState={whoopSyncState}
+              onSync={() => void runWhoopSync()}
+              onConnect={() => void beginWhoopOAuth()}
+              onDisconnect={disconnectWhoop}
+              effectiveRedirectUri={whoopEffectiveRedirectUri}
+              onOpenConnectionSettings={openApiKeysModal}
+              isMobile={isMobile}
+              onMarkerClick={(id) => setSelectedFitnessMarker(id)}
+            />
           )}
 
           {/* ── HISTORY VIEW ── */}
@@ -2116,12 +2496,19 @@ export default function App() {
       {viewOriginalFile && <ViewOriginalModal file={viewOriginalFile} onClose={() => setViewOriginalFile(null)} themeColors={themeColors} />}
       {showApiKeysModal && (
         <div className="modal-bg" onClick={() => setShowApiKeysModal(false)} role="presentation">
-          <div className="modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600, color: themeColors.accent }}>API keys</div>
-            <div style={{ fontSize: 12, color: themeColors.textDim, marginBottom: 16 }}>
-              Optional. Used for chat and PDF/image import. {driveToken && driveFileId ? "Stored in your Google Drive." : "Stored on this device only."}
-              Keys are never sent to this app's server—only to the AI provider when you use chat or import.
+          <div className="modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600, color: themeColors.accent }}>API keys & WHOOP</div>
+            <div style={{ fontSize: 12, color: themeColors.textDim, marginBottom: 16, lineHeight: 1.5 }}>
+              AI provider keys are used for chat and PDF/image import. WHOOP fields are your OAuth <strong>app</strong> credentials from the{" "}
+              <a href="https://developer.whoop.com/" target="_blank" rel="noreferrer" style={{ color: themeColors.accent }}>
+                WHOOP Developer Dashboard
+              </a>
+              . Everything here is included when you <strong>Export backup (JSON)</strong> (<code style={{ fontSize: 11 }}>settings</code> +{" "}
+              <code style={{ fontSize: 11 }}>whoopCache</code>
+              ). {driveToken && driveFileId ? "Stored in your Google Drive when connected." : "Stored on this device."} Keys are not sent to this app&apos;s
+              server.
             </div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: themeColors.textMuted, marginBottom: 10, letterSpacing: 0.5 }}>AI providers</div>
             {["gemini", "anthropic", "openai", "groq"].map((p) => (
               <div key={p} style={{ marginBottom: 12 }}>
                 <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4, textTransform: "capitalize" }}>{p}</label>
@@ -2146,23 +2533,129 @@ export default function App() {
                 </div>
               </div>
             ))}
-            <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+
+            <div
+              style={{
+                margin: "20px 0 12px",
+                paddingTop: 16,
+                borderTop: `1px solid ${themeColors.border}`,
+                fontSize: 11,
+                fontWeight: 600,
+                color: themeColors.textMuted,
+                letterSpacing: 0.5,
+              }}
+            >
+              WHOOP OAuth app (Client ID / secret)
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: themeColors.textDim,
+                marginBottom: 10,
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: `1px solid ${themeColors.border}`,
+                background: `${themeColors.accent}08`,
+                lineHeight: 1.5,
+              }}
+            >
+              Register a <strong>Redirect URL</strong> in the WHOOP app that matches the effective URI below (exact string).{" "}
+              <code style={{ color: themeColors.accent }}>invalid_request</code> means a mismatch.
+            </div>
+            <div style={{ fontSize: 11, color: themeColors.textDim, marginBottom: 4 }}>Effective redirect URI (for WHOOP dashboard)</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 10 }}>
+              <code
+                style={{
+                  flex: "1 1 200px",
+                  color: themeColors.accent,
+                  fontSize: 11,
+                  wordBreak: "break-all",
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  border: `1px solid ${themeColors.border}`,
+                  background: themeColors.appBg,
+                }}
+              >
+                {getWhoopRedirectUri((whoopCredentialsDraft.redirectUri || "").trim()) || "—"}
+              </code>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: 11, flexShrink: 0 }}
+                onClick={() => {
+                  const u = getWhoopRedirectUri((whoopCredentialsDraft.redirectUri || "").trim());
+                  if (u && navigator.clipboard?.writeText) void navigator.clipboard.writeText(u);
+                }}
+                disabled={!getWhoopRedirectUri((whoopCredentialsDraft.redirectUri || "").trim())}
+              >
+                Copy
+              </button>
+            </div>
+            {typeof window !== "undefined" && !(whoopCredentialsDraft.redirectUri || "").trim() && (
+              <div style={{ fontSize: 10, color: themeColors.textDim, marginBottom: 10 }}>
+                Auto-detected from this tab: <code>{resolveWhoopRedirectUri()}</code>
+              </div>
+            )}
+            <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4 }}>Redirect URI override (optional)</label>
+            <input
+              type="url"
+              autoComplete="off"
+              value={whoopCredentialsDraft.redirectUri || ""}
+              onChange={(e) => setWhoopCredentialsDraft((prev) => ({ ...prev, redirectUri: e.target.value }))}
+              placeholder="Leave empty for auto-detect or VITE_WHOOP_REDIRECT_URI"
+              style={{ width: "100%", marginBottom: 12, fontFamily: "monospace", fontSize: 12 }}
+            />
+            <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4 }}>Client ID</label>
+            <input
+              type="text"
+              autoComplete="off"
+              value={whoopCredentialsDraft.clientId}
+              onChange={(e) => setWhoopCredentialsDraft((prev) => ({ ...prev, clientId: e.target.value }))}
+              placeholder="WHOOP Developer Dashboard"
+              style={{ width: "100%", marginBottom: 12, fontFamily: "monospace", fontSize: 12 }}
+            />
+            <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4 }}>Client Secret (optional)</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 20 }}>
+              <input
+                type={whoopClientSecretVisible ? "text" : "password"}
+                autoComplete="off"
+                value={whoopCredentialsDraft.clientSecret}
+                onChange={(e) => setWhoopCredentialsDraft((prev) => ({ ...prev, clientSecret: e.target.value }))}
+                placeholder="If token exchange requires it"
+                style={{ fontFamily: "monospace", fontSize: 12, flex: 1 }}
+              />
+              <button
+                type="button"
+                onClick={() => setWhoopClientSecretVisible((v) => !v)}
+                style={{ padding: "8px 10px", background: themeColors.border, border: "none", borderRadius: 6, color: themeColors.textMuted, cursor: "pointer", fontSize: 14 }}
+                title={whoopClientSecretVisible ? "Hide" : "Show"}
+                aria-label={whoopClientSecretVisible ? "Hide client secret" : "Show client secret"}
+              >
+                {whoopClientSecretVisible ? "🙈" : "👁"}
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={() => {
-                  setApiKeysFromDrive(apiKeysDraft);
-                  if (driveToken && driveFileId) {
-                    save(people, entries, { apiKeysOverride: apiKeysDraft });
-                  } else if (typeof localStorage !== "undefined") {
-                    localStorage.setItem("biotracker-api-keys", JSON.stringify(apiKeysDraft));
-                  }
+                  const nextWhoop = {
+                    ...whoopSettings,
+                    clientId: whoopCredentialsDraft.clientId.trim(),
+                    clientSecret: whoopCredentialsDraft.clientSecret,
+                    redirectUri: whoopCredentialsDraft.redirectUri.trim(),
+                  };
+                  save(people, entries, { apiKeysOverride: apiKeysDraft, whoopSettingsOverride: nextWhoop });
+                  setWhoopSyncState({ status: "ok", message: "Saved API keys and WHOOP app settings." });
                   setShowApiKeysModal(false);
                 }}
               >
                 {driveToken && driveFileId ? "Save to Drive" : "Save"}
               </button>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowApiKeysModal(false)}>Cancel</button>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowApiKeysModal(false)}>
+                Cancel
+              </button>
             </div>
           </div>
         </div>
