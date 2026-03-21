@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
-import { millisToHm } from "../lib/whoop.js";
 import { buildFitnessMarkerRows } from "../data/whoopFitnessMarkers.js";
+import { computeThirtyDayAverage } from "../data/whoopMetricMonthAvg.js";
+import { compareLatestToMonthAverage } from "../data/whoopMarkerDirection.js";
+import { getWorkoutsOnLocalDate, summarizeWorkoutRow, kilojouleToKcal, formatDurationMs } from "../data/whoopActivities.js";
+import { computeSportDurationTypical, sportAccentColor } from "../data/whoopActivityTypical.js";
+import { WhoopBarTrack } from "./WhoopBarTrack.jsx";
+import { fitnessPointOnLocalDate, getCycleForLocalDate } from "../data/whoopFitnessDate.js";
 import { WhoopRingDial } from "./WhoopRingDial.jsx";
 
 const HERO = {
@@ -9,14 +14,15 @@ const HERO = {
   strain: { id: "whoop_cycle_strain", title: "Strain", max: 21, ringColor: "#f59e0b" },
 };
 
-const HERO_IDS = new Set([HERO.recovery.id, HERO.sleep.id, HERO.strain.id]);
+/** Table / list order: Sleep → Recovery → Strain → Workout → Body */
+const CATEGORY_RANK = { Sleep: 0, Recovery: 1, Strain: 2, Workout: 3, Body: 4 };
 
-function formatIsoDate(iso) {
+function formatTimeOnly(iso) {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   } catch {
-    return iso;
+    return "—";
   }
 }
 
@@ -27,32 +33,31 @@ function pickRow(rows, id) {
 /**
  * @param {object} props
  * @param {object} props.themeColors
+ * @param {string} props.viewDate — YYYY-MM-DD (local)
  * @param {object | null} props.cache — whoopCache[personId]
- * @param {boolean} props.connected
+ * @param {boolean} props.connected — WHOOP OAuth connected for this profile
  * @param {{ status: string, message: string }} props.syncState
- * @param {() => void} props.onSync
- * @param {() => void} props.onConnect
- * @param {() => void} props.onDisconnect
- * @param {string} props.effectiveRedirectUri — resolved redirect for WHOOP app registration
- * @param {() => void} props.onOpenConnectionSettings — opens Settings → API keys & WHOOP
  * @param {boolean} props.isMobile
  * @param {(markerId: string) => void} props.onMarkerClick
  */
+function augmentRowForDate(row, ymd) {
+  if (!row) return null;
+  const pt = fitnessPointOnLocalDate(row.points, ymd);
+  if (!pt) return { ...row, latestDisplay: "—", latestValue: undefined };
+  return { ...row, latestDisplay: pt.displayValue, latestValue: pt.value };
+}
+
 export function FitnessWhoopView({
   themeColors,
+  viewDate,
   cache,
   connected,
   syncState,
-  onSync,
-  onConnect,
-  onDisconnect,
-  effectiveRedirectUri,
-  onOpenConnectionSettings,
   isMobile,
   onMarkerClick,
 }) {
   const [allMetricsOpen, setAllMetricsOpen] = useState(false);
-  const [tableSort, setTableSort] = useState({ by: "label", dir: "asc" });
+  const [tableSort, setTableSort] = useState({ by: "category", dir: "asc" });
 
   const rows = useMemo(() => buildFitnessMarkerRows(cache), [cache]);
 
@@ -63,7 +68,11 @@ export function FitnessWhoopView({
     list.sort((a, b) => {
       let cmp = 0;
       if (by === "label") cmp = a.label.localeCompare(b.label);
-      else if (by === "category") cmp = a.category.localeCompare(b.category) || a.label.localeCompare(b.label);
+      else if (by === "category") {
+        const ra = CATEGORY_RANK[a.category] ?? 99;
+        const rb = CATEGORY_RANK[b.category] ?? 99;
+        cmp = ra - rb || a.label.localeCompare(b.label);
+      }
       else if (by === "latest") {
         const av = a.latestValue;
         const bv = b.latestValue;
@@ -77,20 +86,57 @@ export function FitnessWhoopView({
     return list;
   }, [rows, tableSort]);
 
-  const secondaryRows = useMemo(() => rows.filter((r) => !HERO_IDS.has(r.id)), [rows]);
+  const cycleEnergy = useMemo(() => {
+    const c = getCycleForLocalDate(cache?.cycles, viewDate);
+    const kj = c?.score?.kilojoule;
+    return kilojouleToKcal(kj != null ? Number(kj) : null);
+  }, [cache?.cycles, viewDate]);
 
-  const recoveryRow = pickRow(rows, HERO.recovery.id);
-  const sleepRow = pickRow(rows, HERO.sleep.id);
-  const strainRow = pickRow(rows, HERO.strain.id);
-  const hrvRow = pickRow(rows, "whoop_hrv_rmssd");
+  const dayActivities = useMemo(
+    () => getWorkoutsOnLocalDate(cache?.workouts, viewDate).map((w) => ({ w, s: summarizeWorkoutRow(w) })),
+    [cache?.workouts, viewDate]
+  );
+
+  const workoutDurationTypicalBySport = useMemo(() => {
+    const ws = cache?.workouts;
+    if (!ws?.length || !dayActivities.length) return new Map();
+    const m = new Map();
+    const names = [...new Set(dayActivities.map(({ s }) => s.sport))];
+    for (const name of names) {
+      const t = computeSportDurationTypical(ws, name);
+      if (t) m.set(name, t);
+    }
+    return m;
+  }, [cache?.workouts, dayActivities]);
+
+  const metricsWithTrend = useMemo(() => {
+    return rows
+      .filter((r) => r.category !== "Sleep")
+      .map((r) => {
+        const monthAvg = computeThirtyDayAverage(r.points);
+        const pt = fitnessPointOnLocalDate(r.points, viewDate);
+        const latestVal = pt?.value;
+        const t = compareLatestToMonthAverage(r.id, latestVal, monthAvg);
+        return {
+          ...r,
+          latestDisplay: pt?.displayValue ?? "—",
+          latestValue: latestVal,
+          monthAvg,
+          trend: t,
+        };
+      });
+  }, [rows, viewDate]);
+
+  const recoveryRow = augmentRowForDate(pickRow(rows, HERO.recovery.id), viewDate);
+  const sleepRow = augmentRowForDate(pickRow(rows, HERO.sleep.id), viewDate);
+  const strainRow = augmentRowForDate(pickRow(rows, HERO.strain.id), viewDate);
+  const hrvRow = augmentRowForDate(pickRow(rows, "whoop_hrv_rmssd"), viewDate);
 
   const dialSize = isMobile ? 128 : 152;
 
   const recoverySublabel = hrvRow?.pointCount ? `HRV ${hrvRow.latestDisplay}` : undefined;
   const sleepSublabel = sleepRow?.pointCount ? "Sleep performance" : undefined;
   const strainSublabel = strainRow?.pointCount ? "Day strain (cycle)" : undefined;
-
-  const profile = cache?.profile;
 
   const toggleSort = (by) => {
     setTableSort((prev) => ({
@@ -103,110 +149,38 @@ export function FitnessWhoopView({
 
   return (
     <div style={{ animation: "slideIn 0.3s ease" }}>
-      <div style={{ marginBottom: 8, fontSize: 18, fontWeight: 600, color: themeColors.accent, fontFamily: "Space Grotesk, sans-serif" }}>
-        Fitness (WHOOP)
-      </div>
-      <p style={{ fontSize: 12, color: themeColors.textDim, marginBottom: 16, maxWidth: 720, lineHeight: 1.55 }}>
-        Overview inspired by the WHOOP app: recovery, sleep, and strain at a glance; drill into any metric for trends. Set your WHOOP OAuth app
-        credentials under <strong>Settings → API keys & WHOOP</strong> (same place as AI keys; included in JSON backup). Use <strong>Sync now</strong>{" "}
-        for a full history pull.
-      </p>
-
-      {/* Top bar: profile, sync, open API keys modal */}
-      <div
-        className="card"
-        style={{
-          marginBottom: 16,
-          padding: "12px 16px",
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          gap: 12,
-          justifyContent: "space-between",
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, flex: "1 1 200px" }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-            {profile && (
-              <div style={{ fontSize: 14, color: themeColors.text, fontWeight: 600 }}>
-                {profile.first_name} {profile.last_name}
-              </div>
-            )}
-            {cache?.syncedAt && (
-              <span style={{ fontSize: 11, color: themeColors.textDim }}>Last synced {formatIsoDate(cache.syncedAt)}</span>
-            )}
-          </div>
-          {effectiveRedirectUri ? (
-            <div style={{ fontSize: 10, color: themeColors.textDim, wordBreak: "break-all" }}>
-              OAuth redirect URI (register in WHOOP): <code style={{ color: themeColors.accent }}>{effectiveRedirectUri}</code>
-            </div>
-          ) : null}
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <button type="button" className="btn btn-secondary" style={{ fontSize: 12 }} onClick={onOpenConnectionSettings}>
-            API keys & WHOOP
-          </button>
-          {connected ? (
-            <>
-              <button type="button" className="btn btn-primary" style={{ fontSize: 12 }} onClick={onSync} disabled={syncState.status === "loading"}>
-                {syncState.status === "loading" ? "Syncing…" : "Sync now"}
-              </button>
-              <button type="button" className="btn btn-secondary" style={{ fontSize: 12 }} onClick={onDisconnect}>
-                Disconnect
-              </button>
-            </>
-          ) : (
-            <button type="button" className="btn btn-primary" style={{ fontSize: 12 }} onClick={onConnect}>
-              Connect WHOOP
-            </button>
-          )}
-        </div>
-      </div>
-
-      {syncState.message && syncState.status !== "idle" && (
+      {syncState?.message && syncState?.status !== "idle" && (
         <div
           style={{
             marginBottom: 16,
             fontSize: 12,
-            color: syncState.status === "error" ? "#f88" : syncState.status === "ok" ? "#6acc9a" : themeColors.textDim,
+            color: syncState?.status === "error" ? "#f88" : syncState?.status === "ok" ? "#6acc9a" : themeColors.textDim,
           }}
         >
           {syncState.message}
         </div>
       )}
 
-      {/* Hero dials */}
       <div
         style={{
           fontSize: 11,
           color: themeColors.textDim,
           letterSpacing: 2,
-          marginBottom: 12,
           textTransform: "uppercase",
+          marginBottom: 12,
         }}
       >
-        Today at a glance
+        Day overview
       </div>
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))",
+          gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))",
           gap: isMobile ? 14 : 18,
           marginBottom: 28,
-          maxWidth: 1100,
+          maxWidth: 1200,
         }}
       >
-        <WhoopRingDial
-          title={HERO.recovery.title}
-          value={recoveryRow?.latestValue ?? null}
-          max={HERO.recovery.max}
-          display={recoveryRow?.pointCount ? recoveryRow.latestDisplay : "—"}
-          sublabel={recoverySublabel}
-          ringColor={HERO.recovery.ringColor}
-          diameter={dialSize}
-          dimmed={!recoveryRow?.pointCount}
-          onClick={() => onMarkerClick(HERO.recovery.id)}
-        />
         <WhoopRingDial
           title={HERO.sleep.title}
           value={sleepRow?.latestValue ?? null}
@@ -219,6 +193,17 @@ export function FitnessWhoopView({
           onClick={() => onMarkerClick(HERO.sleep.id)}
         />
         <WhoopRingDial
+          title={HERO.recovery.title}
+          value={recoveryRow?.latestValue ?? null}
+          max={HERO.recovery.max}
+          display={recoveryRow?.pointCount ? recoveryRow.latestDisplay : "—"}
+          sublabel={recoverySublabel}
+          ringColor={HERO.recovery.ringColor}
+          diameter={dialSize}
+          dimmed={!recoveryRow?.pointCount}
+          onClick={() => onMarkerClick(HERO.recovery.id)}
+        />
+        <WhoopRingDial
           title={HERO.strain.title}
           value={strainRow?.latestValue ?? null}
           max={HERO.strain.max}
@@ -229,9 +214,20 @@ export function FitnessWhoopView({
           dimmed={!strainRow?.pointCount}
           onClick={() => onMarkerClick(HERO.strain.id)}
         />
+        <WhoopRingDial
+          title="Calories"
+          value={cycleEnergy != null ? cycleEnergy : null}
+          max={2500}
+          display={cycleEnergy != null ? `${Math.round(cycleEnergy)} kcal` : "—"}
+          sublabel="Day energy (cycle)"
+          ringColor="#f472b6"
+          diameter={dialSize}
+          dimmed={cycleEnergy == null}
+          onClick={() => onMarkerClick("whoop_cycle_kilojoule")}
+        />
       </div>
 
-      {/* Secondary metrics */}
+      {/* Today’s activities */}
       <div
         style={{
           fontSize: 11,
@@ -241,48 +237,132 @@ export function FitnessWhoopView({
           textTransform: "uppercase",
         }}
       >
-        More metrics
+        Activities on selected day
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fill, minmax(148px, 1fr))",
-          gap: 10,
-          marginBottom: 28,
-          maxWidth: 1100,
-        }}
-      >
-        {secondaryRows.map((r) => (
-          <button
-            key={r.id}
-            type="button"
-            onClick={() => onMarkerClick(r.id)}
-            className="card"
-            style={{
-              padding: "12px 14px",
-              textAlign: "left",
-              cursor: "pointer",
-              border: `1px solid ${themeColors.border}`,
-              background: themeColors.appBg,
-              borderRadius: 10,
-              transition: "border-color 0.2s, transform 0.15s",
-              font: "inherit",
-              color: "inherit",
-            }}
-          >
-            <div style={{ fontSize: 10, color: themeColors.textDim, letterSpacing: 0.5, marginBottom: 4 }}>{r.category}</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: themeColors.text, marginBottom: 6, lineHeight: 1.3 }}>{r.label}</div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: r.pointCount ? themeColors.accent : themeColors.textDim, fontFamily: "Space Grotesk, sans-serif" }}>
-              {r.latestDisplay}
+      <div className="card" style={{ marginBottom: 24, maxWidth: 1200, padding: "12px 16px" }}>
+        {dayActivities.map(({ w, s }) => {
+          const typical = workoutDurationTypicalBySport.get(s.sport);
+          const durMs = s.durationMs ?? 0;
+          const refMaxMs = Math.max(typical?.refMaxMs ?? 0, durMs, 10 * 60 * 1000);
+          const fillPct = refMaxMs > 0 ? Math.min(100, (durMs / refMaxMs) * 100) : 0;
+          const lowPct = typical && refMaxMs > 0 ? (typical.lowMs / refMaxMs) * 100 : null;
+          const highPct = typical && refMaxMs > 0 ? (typical.highMs / refMaxMs) * 100 : null;
+          const barColor = sportAccentColor(s.sport);
+          const strain = w.score?.strain != null ? Number(w.score.strain) : null;
+          const showStrain = strain != null && !Number.isNaN(strain) && strain > 0.0001;
+          return (
+            <div
+              key={w.id || `${w.start}-${s.sport}`}
+              onClick={() => onMarkerClick("whoop_workout_strain")}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onMarkerClick("whoop_workout_strain");
+                }
+              }}
+              tabIndex={0}
+              role="button"
+              style={{
+                borderBottom: `1px solid ${themeColors.border}`,
+                cursor: "pointer",
+                padding: "14px 0",
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr" : "minmax(100px, 160px) minmax(0, 1fr) auto",
+                gap: isMobile ? 10 : 14,
+                alignItems: "center",
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 700, color: themeColors.text, fontSize: 13 }}>{s.sport}</div>
+                {showStrain && (
+                  <div style={{ fontSize: 11, color: themeColors.textDim, marginTop: 4 }}>Strain {strain.toFixed(2)}</div>
+                )}
+              </div>
+              <div
+                style={{ position: "relative", minWidth: 0 }}
+                title={
+                  typical
+                    ? `Typical duration for ${s.sport} (${typical.sampleSize} past): ${formatDurationMs(typical.lowMs)}–${formatDurationMs(typical.highMs)}`
+                    : undefined
+                }
+              >
+                <WhoopBarTrack
+                  fillPct={fillPct}
+                  lowPct={typical && lowPct != null && highPct != null && highPct > lowPct ? lowPct : null}
+                  highPct={typical && lowPct != null && highPct != null && highPct > lowPct ? Math.min(100, highPct) : null}
+                  fillColor={barColor}
+                  height={32}
+                />
+                {fillPct > 0 && (durMs > 0 || s.kcal != null) && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: `${fillPct / 2}%`,
+                      top: "50%",
+                      transform: "translate(-50%, -50%)",
+                      zIndex: 6,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 10,
+                      pointerEvents: "none",
+                      flexWrap: "nowrap",
+                      maxWidth: "min(96%, calc(100% - 16px))",
+                    }}
+                  >
+                    {s.kcal != null && (
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 800,
+                          color: "#f8fafc",
+                          fontFamily: "Space Grotesk, sans-serif",
+                          textShadow: "0 1px 3px rgba(0,0,0,0.65)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {Math.round(s.kcal)} kcal
+                      </span>
+                    )}
+                    {durMs > 0 && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "rgba(248,250,252,0.98)",
+                          fontFamily: "DM Mono, monospace",
+                          textShadow: "0 1px 3px rgba(0,0,0,0.65)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {formatDurationMs(durMs)}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: themeColors.textDim,
+                  fontFamily: "DM Mono, monospace",
+                  whiteSpace: "nowrap",
+                  textAlign: isMobile ? "left" : "right",
+                }}
+              >
+                {s.start ? formatTimeOnly(s.start) : "—"} → {s.end ? formatTimeOnly(s.end) : "—"}
+              </div>
             </div>
-          </button>
-        ))}
+          );
+        })}
+        {dayActivities.length === 0 && (
+          <div style={{ padding: 24, textAlign: "center", color: themeColors.textDim, fontSize: 13 }}>
+            {connected ? "No activities on this day in synced data." : "Connect and sync to load activities."}
+          </div>
+        )}
       </div>
-      {connected && secondaryRows.length === 0 && (
-        <div style={{ fontSize: 12, color: themeColors.textDim, marginBottom: 24 }}>Sync to load secondary metrics.</div>
-      )}
 
-      {/* Recent workouts */}
+      {/* Metrics vs 30-day average */}
       <div
         style={{
           fontSize: 11,
@@ -292,65 +372,66 @@ export function FitnessWhoopView({
           textTransform: "uppercase",
         }}
       >
-        Recent workouts
+        Metrics (vs 30-day average)
       </div>
-      <div className="card" style={{ overflowX: "auto", marginBottom: 24, maxWidth: 1100 }}>
+      <div className="card" style={{ overflowX: "auto", marginBottom: 28, maxWidth: 1200 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
           <thead>
             <tr style={{ borderBottom: `2px solid ${themeColors.border}` }}>
-              <th style={{ textAlign: "left", padding: "10px 12px", color: themeColors.textDim }}>Sport</th>
-              <th style={{ textAlign: "left", padding: "10px 12px", color: themeColors.textDim }}>Start</th>
-              <th style={{ textAlign: "right", padding: "10px 12px", color: themeColors.textDim }}>Strain</th>
-              <th style={{ textAlign: "right", padding: "10px 12px", color: themeColors.textDim }}>Avg HR</th>
-              <th style={{ textAlign: "right", padding: "10px 12px", color: themeColors.textDim }}>Duration</th>
+              <th style={{ textAlign: "left", padding: "10px 12px", color: themeColors.textDim }}>Metric</th>
+              <th style={{ textAlign: "right", padding: "10px 12px", color: themeColors.textDim }}>Latest</th>
+              <th style={{ textAlign: "right", padding: "10px 12px", color: themeColors.textDim }}>30d avg</th>
+              <th style={{ textAlign: "center", padding: "10px 12px", color: themeColors.textDim, width: 56 }}>Trend</th>
             </tr>
           </thead>
           <tbody>
-            {(cache?.workouts || []).slice(0, 12).map((w) => {
-              const sc = w.score;
-              const start = w.start;
-              const end = w.end;
-              let dur = "—";
-              if (start && end) {
-                try {
-                  dur = millisToHm(new Date(end) - new Date(start));
-                } catch {
-                  dur = "—";
-                }
+            {metricsWithTrend.map((r) => {
+              const { trend, monthAvg } = r;
+              let mark = "—";
+              let color = themeColors.textDim;
+              if (trend.arrow !== "flat" && trend.good != null) {
+                mark = trend.arrow === "up" ? "▲" : "▼";
+                color = trend.good ? "#4ade80" : "#fb923c";
+              } else if (trend.arrow !== "flat") {
+                mark = trend.arrow === "up" ? "▲" : "▼";
+                color = "#94a3b8";
               }
               return (
                 <tr
-                  key={w.id || `${start}-${w.sport_name}`}
-                  onClick={() => onMarkerClick("whoop_workout_strain")}
+                  key={r.id}
+                  onClick={() => onMarkerClick(r.id)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      onMarkerClick("whoop_workout_strain");
+                      onMarkerClick(r.id);
                     }
                   }}
                   tabIndex={0}
                   role="button"
                   style={{ borderBottom: `1px solid ${themeColors.border}`, cursor: "pointer" }}
-                  title="Open workout strain trend"
                 >
-                  <td style={{ padding: "10px 12px" }}>{w.sport_name || "Activity"}</td>
-                  <td style={{ padding: "10px 12px", color: themeColors.textDim }}>{formatIsoDate(start)}</td>
-                  <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600 }}>{sc?.strain != null ? Number(sc.strain).toFixed(2) : "—"}</td>
-                  <td style={{ padding: "10px 12px", textAlign: "right" }}>{sc?.average_heart_rate != null ? `${sc.average_heart_rate}` : "—"}</td>
-                  <td style={{ padding: "10px 12px", textAlign: "right", color: themeColors.textDim }}>{dur}</td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <div style={{ fontSize: 10, color: themeColors.textDim }}>{r.category}</div>
+                    <div style={{ fontWeight: 600, color: themeColors.text }}>{r.label}</div>
+                  </td>
+                  <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.pointCount ? themeColors.accent : themeColors.textDim }}>
+                    {r.latestDisplay}
+                  </td>
+                  <td style={{ padding: "10px 12px", textAlign: "right", color: themeColors.textDim }}>
+                    {monthAvg != null ? (r.unit === "%" ? `${monthAvg.toFixed(1)}%` : monthAvg.toFixed(2)) : "—"}
+                  </td>
+                  <td style={{ padding: "10px 12px", textAlign: "center", fontSize: 14, color }} title="Vs 30-day average (directional cues are approximate)">
+                    {mark}
+                  </td>
                 </tr>
               );
             })}
-            {(!cache?.workouts || cache.workouts.length === 0) && (
-              <tr>
-                <td colSpan={5} style={{ padding: 24, textAlign: "center", color: themeColors.textDim }}>
-                  {connected ? "No workouts in synced data yet." : "Connect and sync to load workouts."}
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
+      {connected && rows.length === 0 && (
+        <div style={{ fontSize: 12, color: themeColors.textDim, marginBottom: 24 }}>Sync to load metrics.</div>
+      )}
 
       {/* Full table (collapsed) */}
       <button
@@ -407,7 +488,9 @@ export function FitnessWhoopView({
               </tr>
             </thead>
             <tbody>
-              {sortedRows.map((r) => (
+              {sortedRows
+                .filter((r) => r.category !== "Sleep")
+                .map((r) => (
                 <tr
                   key={r.id}
                   onClick={() => onMarkerClick(r.id)}

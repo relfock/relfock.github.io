@@ -23,7 +23,9 @@ import { MonitorFrequencyBadge } from "./src/components/MonitorFrequencyBadge.js
 import { buildRangeBar, RangeBarSegments } from "./src/components/RangeBar.jsx";
 import { TrendDetail } from "./src/components/TrendDetail.jsx";
 import { FitnessWhoopView } from "./src/components/FitnessWhoopView.jsx";
+import { FitnessDateBar } from "./src/components/FitnessDateBar.jsx";
 import { WhoopTrendDetail } from "./src/components/WhoopTrendDetail.jsx";
+import { WhoopSleepDetail } from "./src/components/WhoopSleepDetail.jsx";
 import {
   buildWhoopAuthorizeUrl,
   clearWhoopPkceSession,
@@ -38,6 +40,7 @@ import {
   readWhoopPkceSession,
   storeWhoopPkceSession,
   syncWhoopDataset,
+  setWhoopApiProxyRoot,
 } from "./src/lib/whoop.js";
 import { parseNorwegianAnalysehistorikk } from "./src/parsers/norwegian.js";
 import { nameAndSurnameMatch, AI_PROVIDERS, AI_PROVIDER_FREE_TIER } from "./src/lib/importHelpers.js";
@@ -125,8 +128,9 @@ function whoopFromBackupData(data) {
     clientId: data?.whoopClientId ?? data?.VITE_WHOOP_CLIENT_ID,
     clientSecret: data?.whoopClientSecret ?? data?.VITE_WHOOP_CLIENT_SECRET,
     redirectUri: data?.whoopRedirectUri ?? data?.VITE_WHOOP_REDIRECT_URI,
+    apiProxyUrl: data?.whoopApiProxy ?? data?.VITE_WHOOP_API_PROXY,
   };
-  const hasFlat = [flat.clientId, flat.clientSecret, flat.redirectUri].some((x) => x != null && String(x).trim() !== "");
+  const hasFlat = [flat.clientId, flat.clientSecret, flat.redirectUri, flat.apiProxyUrl].some((x) => x != null && String(x).trim() !== "");
   if (hasFlat) {
     return normalizeWhoopSettings({
       ...flat,
@@ -144,6 +148,10 @@ export default function App() {
   const [view, setView] = useState("biomarkers");
   const [selectedBiomarker, setSelectedBiomarker] = useState(null);
   const [selectedFitnessMarker, setSelectedFitnessMarker] = useState(null);
+  const [fitnessViewDate, setFitnessViewDate] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
   const [viewBeforeTrendDetail, setViewBeforeTrendDetail] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importTargetPersonId, setImportTargetPersonId] = useState(null);
@@ -212,7 +220,12 @@ export default function App() {
 
   const [whoopSettings, setWhoopSettings] = useState(() => normalizeWhoopSettings(null));
   const [whoopCache, setWhoopCache] = useState({});
-  const [whoopCredentialsDraft, setWhoopCredentialsDraft] = useState({ clientId: "", clientSecret: "", redirectUri: "" });
+  const [whoopCredentialsDraft, setWhoopCredentialsDraft] = useState({
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    apiProxyUrl: "",
+  });
   const [whoopSyncState, setWhoopSyncState] = useState({ status: "idle", message: "" });
   const whoopSettingsRef = useRef(whoopSettings);
   whoopSettingsRef.current = whoopSettings;
@@ -235,6 +248,10 @@ export default function App() {
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute("content", themeColors.appBg);
   }, [theme, themeColors.appBg]);
+
+  useEffect(() => {
+    setWhoopApiProxyRoot(whoopSettings.apiProxyUrl || "");
+  }, [whoopSettings.apiProxyUrl]);
 
   useEffect(() => {
     if (view === "trends" && !selectedBiomarker) setView("biomarkers");
@@ -448,15 +465,16 @@ export default function App() {
     (async () => {
       try {
         let ws = { ...normalizeWhoopSettings(whoopSettingsRef.current) };
-        if (!ws.clientId) {
-          try {
-            const raw = localStorage.getItem("bloodwork-whoop");
-            if (raw) {
-              const o = JSON.parse(raw);
+        try {
+          const raw = localStorage.getItem("bloodwork-whoop");
+          if (raw) {
+            const o = JSON.parse(raw);
+            if (o.settings && typeof o.settings === "object") {
               ws = { ...ws, ...normalizeWhoopSettings(o.settings) };
             }
-          } catch (_) {}
-        }
+          }
+        } catch (_) {}
+        setWhoopApiProxyRoot((ws.apiProxyUrl || "").trim());
         const clientId = (ws.clientId || import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim();
         const clientSecret = (ws.clientSecret || import.meta.env.VITE_WHOOP_CLIENT_SECRET || "").trim();
         if (!clientId) throw new Error("Missing WHOOP Client ID — add it in Settings → API keys & WHOOP, then try Connect again.");
@@ -504,7 +522,7 @@ export default function App() {
           /failed to fetch|networkerror|load failed|network request failed/i.test(raw) ||
           (e && e.name === "TypeError");
         const corsHint = isNetwork
-          ? " Browsers block direct calls to WHOOP from static sites (CORS). Build with VITE_WHOOP_API_PROXY set to your deployed proxy (see workers/whoop-proxy.js in the repo)."
+          ? " Browsers block direct calls to WHOOP from static sites (CORS). In Settings → API keys & WHOOP, set “WHOOP API proxy” to your deployed Worker URL (see workers/whoop-proxy.js), or rebuild with VITE_WHOOP_API_PROXY."
           : "";
         setWhoopSyncState({ status: "error", message: raw + corsHint });
         setView("fitness");
@@ -521,8 +539,9 @@ export default function App() {
       clientId: whoopSettings.clientId || (import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim(),
       clientSecret: whoopSettings.clientSecret || "",
       redirectUri: whoopSettings.redirectUri || "",
+      apiProxyUrl: whoopSettings.apiProxyUrl || "",
     });
-  }, [view, whoopSettings.clientId, whoopSettings.clientSecret, whoopSettings.redirectUri]);
+  }, [view, whoopSettings.clientId, whoopSettings.clientSecret, whoopSettings.redirectUri, whoopSettings.apiProxyUrl]);
 
   const addEntry = (personId, date, biomarkers, extractedName = null, extractedNameEnglish = null, importedFile = null) => {
     const newEntries = {
@@ -630,7 +649,16 @@ export default function App() {
       await save(people, entries, { whoopSettingsOverride: nextWhoop, whoopCacheOverride: nextCache });
       if (!quiet) setWhoopSyncState({ status: "ok", message: "Synced successfully." });
     } catch (e) {
-      if (!quiet) setWhoopSyncState({ status: "error", message: e?.message || "Sync failed" });
+      if (!quiet) {
+        const raw = e?.message || String(e) || "Sync failed";
+        const isNetwork =
+          /failed to fetch|networkerror|load failed|network request failed/i.test(raw) ||
+          (e && e.name === "TypeError");
+        const corsHint = isNetwork
+          ? " On static hosting, set “WHOOP API proxy” in Settings → API keys & WHOOP (or VITE_WHOOP_API_PROXY at build). See workers/whoop-proxy.js."
+          : "";
+        setWhoopSyncState({ status: "error", message: raw + corsHint });
+      }
     }
   };
 
@@ -687,6 +715,7 @@ export default function App() {
       clientId: whoopSettings.clientId || (import.meta.env.VITE_WHOOP_CLIENT_ID || "").trim(),
       clientSecret: whoopSettings.clientSecret || "",
       redirectUri: whoopSettings.redirectUri || "",
+      apiProxyUrl: whoopSettings.apiProxyUrl || "",
     });
     setWhoopClientSecretVisible(false);
     setApiKeyVisible({});
@@ -1484,6 +1513,59 @@ export default function App() {
                   <span style={{ fontSize: 9, color: themeColors.textDim, letterSpacing: 1 }}>SCORE</span>
                 </div>
               )}
+              {view === "fitness" && selectedPerson && (
+                <>
+                  <div style={{ width: 1, height: 22, background: themeColors.border, opacity: 0.75, flexShrink: 0, marginLeft: 4 }} aria-hidden />
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flexWrap: "wrap",
+                      marginLeft: 4,
+                      maxWidth: isMobile ? "100%" : 720,
+                    }}
+                  >
+                    {whoopCache[selectedPerson]?.syncedAt && (
+                      <span style={{ fontSize: 10, color: themeColors.textDim, whiteSpace: "nowrap" }} title="Last WHOOP sync">
+                        Last sync{" "}
+                        {(() => {
+                          try {
+                            return new Date(whoopCache[selectedPerson].syncedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+                          } catch {
+                            return "—";
+                          }
+                        })()}
+                      </span>
+                    )}
+                    <FitnessDateBar compact viewDate={fitnessViewDate} onViewDateChange={setFitnessViewDate} themeColors={themeColors} />
+                    {whoopSettings.tokensByPersonId?.[selectedPerson]?.refreshToken ||
+                    whoopSettings.tokensByPersonId?.[selectedPerson]?.accessToken ? (
+                      <>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          style={{ fontSize: 11, padding: "5px 12px" }}
+                          onClick={() => void runWhoopSync()}
+                          disabled={whoopSyncState.status === "loading"}
+                        >
+                          {whoopSyncState.status === "loading" ? "Syncing…" : "Sync now"}
+                        </button>
+                        <button type="button" className="btn btn-secondary" style={{ fontSize: 11, padding: "5px 12px" }} onClick={disconnectWhoop}>
+                          Disconnect
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" className="btn btn-primary" style={{ fontSize: 11, padding: "5px 12px" }} onClick={() => void beginWhoopOAuth()}>
+                        Connect WHOOP
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-secondary" style={{ fontSize: 11, padding: "5px 12px" }} onClick={openApiKeysModal} title="API keys & WHOOP">
+                      API keys
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -2005,31 +2087,50 @@ export default function App() {
           )}
 
           {/* ── FITNESS (WHOOP) VIEW ── */}
-          {currentPerson && view === "fitness" && selectedFitnessMarker && (
-            <WhoopTrendDetail
-              markerId={selectedFitnessMarker}
-              cache={whoopCache[selectedPerson] || null}
-              onBack={() => setSelectedFitnessMarker(null)}
-              themeColors={themeColors}
-            />
-          )}
-          {currentPerson && view === "fitness" && !selectedFitnessMarker && (
-            <FitnessWhoopView
-              themeColors={themeColors}
-              cache={whoopCache[selectedPerson] || null}
-              connected={Boolean(
-                whoopSettings.tokensByPersonId?.[selectedPerson]?.refreshToken ||
-                  whoopSettings.tokensByPersonId?.[selectedPerson]?.accessToken
+          {currentPerson && view === "fitness" && (
+            <>
+              {selectedFitnessMarker ? (
+                selectedFitnessMarker === "whoop_sleep_performance" ? (
+                  <WhoopSleepDetail
+                    cache={whoopCache[selectedPerson] || null}
+                    wakeDateYmd={fitnessViewDate}
+                    onBack={() => setSelectedFitnessMarker(null)}
+                    themeColors={themeColors}
+                    trendPanel={
+                      <WhoopTrendDetail
+                        markerId="whoop_sleep_performance"
+                        cache={whoopCache[selectedPerson] || null}
+                        onBack={() => {}}
+                        themeColors={themeColors}
+                        embedded
+                        asOfYmd={fitnessViewDate}
+                      />
+                    }
+                  />
+                ) : (
+                  <WhoopTrendDetail
+                    markerId={selectedFitnessMarker}
+                    cache={whoopCache[selectedPerson] || null}
+                    onBack={() => setSelectedFitnessMarker(null)}
+                    themeColors={themeColors}
+                    asOfYmd={fitnessViewDate}
+                  />
+                )
+              ) : (
+                <FitnessWhoopView
+                  themeColors={themeColors}
+                  viewDate={fitnessViewDate}
+                  cache={whoopCache[selectedPerson] || null}
+                  connected={Boolean(
+                    whoopSettings.tokensByPersonId?.[selectedPerson]?.refreshToken ||
+                      whoopSettings.tokensByPersonId?.[selectedPerson]?.accessToken
+                  )}
+                  syncState={whoopSyncState}
+                  isMobile={isMobile}
+                  onMarkerClick={(id) => setSelectedFitnessMarker(id)}
+                />
               )}
-              syncState={whoopSyncState}
-              onSync={() => void runWhoopSync()}
-              onConnect={() => void beginWhoopOAuth()}
-              onDisconnect={disconnectWhoop}
-              effectiveRedirectUri={whoopEffectiveRedirectUri}
-              onOpenConnectionSettings={openApiKeysModal}
-              isMobile={isMobile}
-              onMarkerClick={(id) => setSelectedFitnessMarker(id)}
-            />
+            </>
           )}
 
           {/* ── HISTORY VIEW ── */}
@@ -2621,6 +2722,19 @@ export default function App() {
               placeholder="Leave empty for auto-detect or VITE_WHOOP_REDIRECT_URI"
               style={{ width: "100%", marginBottom: 12, fontFamily: "monospace", fontSize: 12 }}
             />
+            <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4 }}>WHOOP API proxy (CORS)</label>
+            <input
+              type="url"
+              autoComplete="off"
+              value={whoopCredentialsDraft.apiProxyUrl || ""}
+              onChange={(e) => setWhoopCredentialsDraft((prev) => ({ ...prev, apiProxyUrl: e.target.value }))}
+              placeholder="https://your-worker.workers.dev (deploy workers/whoop-proxy.js)"
+              style={{ width: "100%", marginBottom: 8, fontFamily: "monospace", fontSize: 12 }}
+            />
+            <div style={{ fontSize: 10, color: themeColors.textDim, marginBottom: 12, lineHeight: 1.45 }}>
+              On GitHub Pages the browser cannot call WHOOP directly. Paste your Cloudflare Worker URL here (no trailing slash). Leave empty if the site was built
+              with <code style={{ fontSize: 10 }}>VITE_WHOOP_API_PROXY</code>.
+            </div>
             <label style={{ display: "block", fontSize: 11, color: themeColors.textDim, marginBottom: 4 }}>Client ID</label>
             <input
               type="text"
@@ -2661,6 +2775,7 @@ export default function App() {
                     clientId: whoopCredentialsDraft.clientId.trim(),
                     clientSecret: whoopCredentialsDraft.clientSecret,
                     redirectUri: whoopCredentialsDraft.redirectUri.trim(),
+                    apiProxyUrl: whoopCredentialsDraft.apiProxyUrl.trim(),
                   };
                   save(people, entries, { apiKeysOverride: apiKeysDraft, whoopSettingsOverride: nextWhoop });
                   setWhoopSyncState({ status: "ok", message: "Saved API keys and WHOOP app settings." });

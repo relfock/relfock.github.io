@@ -6,10 +6,22 @@
 /** User-facing OAuth login (must stay on WHOOP’s host). */
 export const WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth";
 
+/** Set at runtime from saved settings (Settings → WHOOP) so GitHub Pages works without a rebuild. */
+let runtimeWhoopApiProxyRoot = "";
+
 /**
- * API root for data + token POST. In dev, set VITE_WHOOP_API_PROXY=/api/whoop (see vite.config.js) if the browser blocks CORS.
+ * Call when WHOOP settings load or change. Empty string clears; build-time VITE_WHOOP_API_PROXY is used next.
+ */
+export function setWhoopApiProxyRoot(url) {
+  runtimeWhoopApiProxyRoot = typeof url === "string" ? url.trim().replace(/\/$/, "") : "";
+}
+
+/**
+ * API root for data + token POST. Order: saved proxy URL → VITE_WHOOP_API_PROXY → direct (often blocked by CORS on static hosts).
+ * In dev, .env.development can set VITE_WHOOP_API_PROXY=/api/whoop (see vite.config.js).
  */
 export function getWhoopApiRoot() {
+  if (runtimeWhoopApiProxyRoot) return runtimeWhoopApiProxyRoot;
   const custom = (import.meta.env.VITE_WHOOP_API_PROXY || "").trim();
   if (custom) return custom.replace(/\/$/, "");
   return "https://api.prod.whoop.com";
@@ -436,7 +448,9 @@ export function coerceWhoopTokenRecord(rec) {
 }
 
 export function normalizeWhoopSettings(raw) {
-  if (!raw || typeof raw !== "object") return { clientId: "", clientSecret: "", redirectUri: "", tokensByPersonId: {} };
+  if (!raw || typeof raw !== "object") {
+    return { clientId: "", clientSecret: "", redirectUri: "", apiProxyUrl: "", tokensByPersonId: {} };
+  }
   const tokensByPersonId = {};
   if (raw.tokensByPersonId && typeof raw.tokensByPersonId === "object") {
     for (const [pid, rec] of Object.entries(raw.tokensByPersonId)) {
@@ -447,6 +461,7 @@ export function normalizeWhoopSettings(raw) {
     clientId: String(raw.clientId || ""),
     clientSecret: String(raw.clientSecret || ""),
     redirectUri: String(raw.redirectUri || ""),
+    apiProxyUrl: String(raw.apiProxyUrl || "").trim(),
     tokensByPersonId,
   };
 }

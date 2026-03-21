@@ -2,6 +2,8 @@
  * WHOOP-derived fitness markers: extract time series from synced whoopCache for table + trends.
  */
 
+import { kilojouleToKcal } from "./whoopActivities.js";
+
 /** @typedef {{ sortTime: string, date: string, value: number, displayValue: string }} FitnessPoint */
 
 function sortPoints(arr) {
@@ -98,67 +100,6 @@ function extractBody(cache) {
 /** @returns {readonly { id: string, label: string, unit: string, category: string, extract: (cache: object) => FitnessPoint[] }[]} */
 export function getWhoopFitnessMarkerDefs() {
   return [
-    {
-      id: "whoop_recovery_score",
-      label: "Recovery score",
-      unit: "%",
-      category: "Recovery",
-      extract: (c) =>
-        extractRecoveries(c, (sc) => {
-          const v = sc?.recovery_score;
-          if (v == null) return null;
-          return { value: v, display: `${v}%` };
-        }),
-    },
-    {
-      id: "whoop_resting_hr",
-      label: "Resting heart rate",
-      unit: "bpm",
-      category: "Recovery",
-      extract: (c) =>
-        extractRecoveries(c, (sc) => {
-          const v = sc?.resting_heart_rate;
-          if (v == null) return null;
-          return { value: v, display: `${v}` };
-        }),
-    },
-    {
-      id: "whoop_hrv_rmssd",
-      label: "HRV (RMSSD)",
-      unit: "ms",
-      category: "Recovery",
-      extract: (c) =>
-        extractRecoveries(c, (sc) => {
-          const v = sc?.hrv_rmssd_milli;
-          if (v == null) return null;
-          const n = Number(v);
-          return { value: n, display: `${n.toFixed(1)}` };
-        }),
-    },
-    {
-      id: "whoop_spo2",
-      label: "Blood oxygen (SpO₂)",
-      unit: "%",
-      category: "Recovery",
-      extract: (c) =>
-        extractRecoveries(c, (sc) => {
-          const v = sc?.spo2_percentage;
-          if (v == null) return null;
-          return { value: v, display: `${Number(v).toFixed(1)}%` };
-        }),
-    },
-    {
-      id: "whoop_skin_temp",
-      label: "Skin temperature",
-      unit: "°C",
-      category: "Recovery",
-      extract: (c) =>
-        extractRecoveries(c, (sc) => {
-          const v = sc?.skin_temp_celsius;
-          if (v == null) return null;
-          return { value: v, display: `${Number(v).toFixed(2)} °C` };
-        }),
-    },
     {
       id: "whoop_sleep_performance",
       label: "Sleep performance",
@@ -285,6 +226,67 @@ export function getWhoopFitnessMarkerDefs() {
         }),
     },
     {
+      id: "whoop_recovery_score",
+      label: "Recovery score",
+      unit: "%",
+      category: "Recovery",
+      extract: (c) =>
+        extractRecoveries(c, (sc) => {
+          const v = sc?.recovery_score;
+          if (v == null) return null;
+          return { value: v, display: `${v}%` };
+        }),
+    },
+    {
+      id: "whoop_resting_hr",
+      label: "Resting heart rate",
+      unit: "bpm",
+      category: "Recovery",
+      extract: (c) =>
+        extractRecoveries(c, (sc) => {
+          const v = sc?.resting_heart_rate;
+          if (v == null) return null;
+          return { value: v, display: `${v}` };
+        }),
+    },
+    {
+      id: "whoop_hrv_rmssd",
+      label: "HRV (RMSSD)",
+      unit: "ms",
+      category: "Recovery",
+      extract: (c) =>
+        extractRecoveries(c, (sc) => {
+          const v = sc?.hrv_rmssd_milli;
+          if (v == null) return null;
+          const n = Number(v);
+          return { value: n, display: `${n.toFixed(1)}` };
+        }),
+    },
+    {
+      id: "whoop_spo2",
+      label: "Blood oxygen (SpO₂)",
+      unit: "%",
+      category: "Recovery",
+      extract: (c) =>
+        extractRecoveries(c, (sc) => {
+          const v = sc?.spo2_percentage;
+          if (v == null) return null;
+          return { value: v, display: `${Number(v).toFixed(1)}%` };
+        }),
+    },
+    {
+      id: "whoop_skin_temp",
+      label: "Skin temperature",
+      unit: "°C",
+      category: "Recovery",
+      extract: (c) =>
+        extractRecoveries(c, (sc) => {
+          const v = sc?.skin_temp_celsius;
+          if (v == null) return null;
+          return { value: v, display: `${Number(v).toFixed(2)} °C` };
+        }),
+    },
+    {
       id: "whoop_cycle_strain",
       label: "Day strain (cycle)",
       unit: "strain",
@@ -322,14 +324,16 @@ export function getWhoopFitnessMarkerDefs() {
     },
     {
       id: "whoop_cycle_kilojoule",
-      label: "Cycle energy",
-      unit: "kJ",
+      label: "Calories",
+      unit: "kcal",
       category: "Strain",
       extract: (c) =>
         extractCycles(c, (sc) => {
-          const v = sc?.kilojoule;
-          if (v == null) return null;
-          return { value: v, display: `${Math.round(v)}` };
+          const kj = sc?.kilojoule;
+          if (kj == null) return null;
+          const kcal = kilojouleToKcal(Number(kj));
+          if (kcal == null) return null;
+          return { value: kcal, display: `${Math.round(kcal)}` };
         }),
     },
     {

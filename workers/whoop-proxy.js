@@ -5,9 +5,9 @@
  * Deploy: https://developers.cloudflare.com/workers/get-started/guide/
  * 1. wrangler init whoop-proxy && replace src/index.js with this file (or paste into dashboard worker).
  * 2. wrangler deploy
- * 3. In your GitHub Actions workflow (or local build for Pages), set:
+ * 3. Either paste the Worker URL in the app (Settings → API keys & WHOOP → WHOOP API proxy), or set at build:
  *    VITE_WHOOP_API_PROXY=https://YOUR-SUBDOMAIN.workers.dev
- * 4. Rebuild and redeploy the site.
+ * 4. If you used the env var, rebuild and redeploy the site.
  *
  * Security: This forwards arbitrary paths to WHOOP; only deploy on an account you control. Do not add secrets here.
  */
@@ -34,11 +34,11 @@ export default {
     };
 
     const res = await fetch(target.toString(), init);
-    const headers = new Headers(res.headers);
+    const resHeaders = new Headers(res.headers);
     for (const [k, v] of Object.entries(corsHeaders(request))) {
-      headers.set(k, v);
+      resHeaders.set(k, v);
     }
-    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: resHeaders });
   },
 };
 
