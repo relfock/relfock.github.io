@@ -5,6 +5,10 @@
 
 /** @type {Record<string, 'higher' | 'lower' | 'neutral'>} */
 export const WHOOP_MARKER_BETTER = {
+  fitness_lab_core_temp: "neutral",
+  fitness_lab_bp_sys: "lower",
+  fitness_lab_bp_dia: "lower",
+  fitness_lab_vo2: "higher",
   whoop_recovery_score: "higher",
   whoop_resting_hr: "lower",
   whoop_hrv_rmssd: "higher",
@@ -29,6 +33,9 @@ export const WHOOP_MARKER_BETTER = {
   whoop_workout_max_hr: "neutral",
   whoop_workout_kilojoule: "neutral",
   whoop_workout_distance: "neutral",
+  whoop_weekly_hr_zones_low: "neutral",
+  whoop_weekly_hr_zones_high: "neutral",
+  whoop_weekly_strength_time: "neutral",
   whoop_body_height: "neutral",
   whoop_body_weight: "neutral",
   whoop_body_max_hr: "neutral",

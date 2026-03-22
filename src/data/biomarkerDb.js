@@ -1663,9 +1663,9 @@ export const BIOMARKER_DB = {
     icon: "🛡️",
   },
 
-  // ── CARDIOVASCULAR ────────────────────────────────────────────────────────
+  // ── FITNESS (manual / lab vitals; shown in Fitness view) ─────────────────
   "Blood Pressure Systolic": {
-    category: "Cardiovascular",
+    category: "Fitness",
     unit: "mmHg",
     monitorFrequency: "3mo",
     // ACC/AHA 2017: Normal <120, Elevated 120–129, Stage 1 HTN 130–139, Stage 2 ≥140.
@@ -1679,7 +1679,7 @@ export const BIOMARKER_DB = {
     icon: "❤️",
   },
   "Blood Pressure Diastolic": {
-    category: "Cardiovascular",
+    category: "Fitness",
     unit: "mmHg",
     monitorFrequency: "3mo",
     // ACC/AHA: Normal <80, Stage 1 HTN 80–89, Stage 2 ≥90.
@@ -1693,7 +1693,7 @@ export const BIOMARKER_DB = {
     icon: "💓",
   },
   "Resting Heart Rate": {
-    category: "Cardiovascular",
+    category: "Fitness",
     unit: "bpm",
     monitorFrequency: "3mo",
     // Normal range: 60–100 bpm. Fit athletes: 40–60 bpm. Blueprint targets fit range.
@@ -1706,10 +1706,8 @@ export const BIOMARKER_DB = {
     improve: "Zone 2 aerobic training (conversational pace) 150+ min/week is the primary driver of RHR reduction. Progressive aerobic fitness over months/years. Weight loss reduces resting HR. Reduce caffeine after 2 PM. Improve sleep quality (HRV and RHR improve together).",
     icon: "💗",
   },
-
-  // ── LONGEVITY ─────────────────────────────────────────────────────────────
   "VO2 Max": {
-    category: "Longevity",
+    category: "Fitness",
     unit: "mL/kg/min",
     monitorFrequency: "1y",
     // ACSM age-adjusted percentiles (men, all ages combined as approximate guide):
@@ -1725,6 +1723,22 @@ export const BIOMARKER_DB = {
     improve: "Zone 2 steady-state cardio (conversational pace, 150–200 min/week) builds aerobic base. Norwegian 4×4 intervals (4 min at 90–95% max HR × 4 sets, 2×/week) raise VO2 Max ~10% in 8 weeks. Combine both modalities. Each 1 mL/kg/min increase corresponds to ~1% mortality risk reduction.",
     icon: "🫁",
   },
+  "Core Temperature": {
+    category: "Fitness",
+    unit: "°C",
+    monitorFrequency: "3mo",
+    // Resting core / ingestible sensor range; fever typically ≥38°C.
+    optimal: [36.3, 37.2],
+    sufficient: [36.0, 37.5],
+    high: [37.5, 9999],
+    low: [0, 36.0],
+    description:
+      "Core (deep body) temperature from a wearable, ingestible sensor, or consistent oral/tympanic protocol. Resting core is typically ~36.5–37.3°C. Sustained elevation may indicate illness, overtraining, or environment; unusually low readings warrant repeat measurement.",
+    improve: "Track at the same time of day and device placement. Rule out acute infection if elevated. Heat acclimation and hydration affect readings during exercise.",
+    icon: "🌡️",
+  },
+
+  // ── LONGEVITY ─────────────────────────────────────────────────────────────
   "Grip Strength": {
     category: "Longevity",
     unit: "kg",

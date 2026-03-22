@@ -19,6 +19,7 @@ const CIRC = 2 * Math.PI * R;
  * @param {string} [props.sublabel] — Small line under the score
  * @param {string} props.ringColor — Arc stroke
  * @param {string} [props.trackColor] — Background track
+ * @param {string} [props.centerTextColor] — Center score text (defaults to light neutral)
  * @param {() => void} [props.onClick]
  * @param {number} [props.diameter] — Outer container size in px
  * @param {boolean} [props.dimmed] — No data
@@ -31,6 +32,7 @@ export function WhoopRingDial({
   sublabel,
   ringColor,
   trackColor = "rgba(26, 48, 80, 0.55)",
+  centerTextColor,
   onClick,
   diameter = 152,
   dimmed = false,
@@ -89,7 +91,7 @@ export function WhoopRingDial({
             fontSize: diameter < 130 ? 22 : 28,
             fontWeight: 700,
             fontFamily: "Space Grotesk, sans-serif",
-            color: dimmed ? "#5a7090" : "#e8f0ff",
+            color: dimmed ? "#5a7090" : centerTextColor ?? "#e8f0ff",
             lineHeight: 1.1,
             textAlign: "center",
           }}

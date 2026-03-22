@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { buildFitnessLabRows } from "../data/fitnessLabMarkers.js";
 import { buildFitnessMarkerRows } from "../data/whoopFitnessMarkers.js";
 import { computeThirtyDayAverage } from "../data/whoopMetricMonthAvg.js";
 import { compareLatestToMonthAverage } from "../data/whoopMarkerDirection.js";
@@ -6,6 +7,8 @@ import { getWorkoutsOnLocalDate, summarizeWorkoutRow, kilojouleToKcal, formatDur
 import { computeSportDurationTypical, sportAccentColor } from "../data/whoopActivityTypical.js";
 import { WhoopBarTrack } from "./WhoopBarTrack.jsx";
 import { fitnessPointOnLocalDate, getCycleForLocalDate } from "../data/whoopFitnessDate.js";
+import { getWhoopRecoveryRingColor } from "../data/whoopScoreColors.js";
+import { getRolling7dHrZoneBucketMs, getRolling7dStrengthDurationMs } from "../data/whoopHrZonesWeekly.js";
 import { WhoopRingDial } from "./WhoopRingDial.jsx";
 
 const HERO = {
@@ -14,7 +17,13 @@ const HERO = {
   strain: { id: "whoop_cycle_strain", title: "Strain", max: 21, ringColor: "#f59e0b" },
 };
 
-/** Table / list order: Sleep → Recovery → Strain → Workout → Body */
+const WEEKLY_MARKER = {
+  zonesLow: "whoop_weekly_hr_zones_low",
+  zonesHigh: "whoop_weekly_hr_zones_high",
+  strength: "whoop_weekly_strength_time",
+};
+
+/** Table / list order (lab/manual vitals use Body alongside WHOOP body metrics) */
 const CATEGORY_RANK = { Sleep: 0, Recovery: 1, Strain: 2, Workout: 3, Body: 4 };
 
 function formatTimeOnly(iso) {
@@ -39,6 +48,8 @@ function pickRow(rows, id) {
  * @param {{ status: string, message: string }} props.syncState
  * @param {boolean} props.isMobile
  * @param {(markerId: string) => void} props.onMarkerClick
+ * @param {object[] | undefined} props.personEntries — lab history (oldest → newest) for manual fitness metrics
+ * @param {(biomarkerName: string) => void} [props.onLabVitalClick] — open trend for a lab vital
  */
 function augmentRowForDate(row, ymd) {
   if (!row) return null;
@@ -55,11 +66,20 @@ export function FitnessWhoopView({
   syncState,
   isMobile,
   onMarkerClick,
+  personEntries = [],
+  onLabVitalClick,
 }) {
   const [allMetricsOpen, setAllMetricsOpen] = useState(false);
   const [tableSort, setTableSort] = useState({ by: "category", dir: "asc" });
 
-  const rows = useMemo(() => buildFitnessMarkerRows(cache), [cache]);
+  const labRows = useMemo(() => buildFitnessLabRows(personEntries), [personEntries]);
+  const whoopRows = useMemo(() => buildFitnessMarkerRows(cache), [cache]);
+  const rows = useMemo(() => [...labRows, ...whoopRows], [labRows, whoopRows]);
+
+  const openMetricRow = (r) => {
+    if (r.biomarkerKey) onLabVitalClick?.(r.biomarkerKey);
+    else onMarkerClick(r.id);
+  };
 
   const sortedRows = useMemo(() => {
     const { by, dir } = tableSort;
@@ -109,6 +129,17 @@ export function FitnessWhoopView({
     return m;
   }, [cache?.workouts, dayActivities]);
 
+  /** Rolling 7 local days ending on `viewDate` — same idea as WHOOP weekly zone summaries (from workout zone_durations). */
+  const hrZonesWeekly = useMemo(
+    () => getRolling7dHrZoneBucketMs(cache?.workouts, viewDate),
+    [cache?.workouts, viewDate]
+  );
+
+  const strengthWeekly = useMemo(
+    () => getRolling7dStrengthDurationMs(cache?.workouts, viewDate),
+    [cache?.workouts, viewDate]
+  );
+
   const metricsWithTrend = useMemo(() => {
     return rows
       .filter((r) => r.category !== "Sleep")
@@ -137,6 +168,7 @@ export function FitnessWhoopView({
   const recoverySublabel = hrvRow?.pointCount ? `HRV ${hrvRow.latestDisplay}` : undefined;
   const sleepSublabel = sleepRow?.pointCount ? "Sleep performance" : undefined;
   const strainSublabel = strainRow?.pointCount ? "Day strain (cycle)" : undefined;
+  const recoveryColor = recoveryRow?.pointCount ? getWhoopRecoveryRingColor(recoveryRow.latestValue) : undefined;
 
   const toggleSort = (by) => {
     setTableSort((prev) => ({
@@ -198,7 +230,8 @@ export function FitnessWhoopView({
           max={HERO.recovery.max}
           display={recoveryRow?.pointCount ? recoveryRow.latestDisplay : "—"}
           sublabel={recoverySublabel}
-          ringColor={HERO.recovery.ringColor}
+          ringColor={recoveryColor ?? HERO.recovery.ringColor}
+          centerTextColor={recoveryColor}
           diameter={dialSize}
           dimmed={!recoveryRow?.pointCount}
           onClick={() => onMarkerClick(HERO.recovery.id)}
@@ -226,6 +259,152 @@ export function FitnessWhoopView({
           onClick={() => onMarkerClick("whoop_cycle_kilojoule")}
         />
       </div>
+
+      <div
+        style={{
+          fontSize: 11,
+          color: themeColors.textDim,
+          letterSpacing: 2,
+          textTransform: "uppercase",
+          marginBottom: 12,
+        }}
+      >
+        Rolling week (to selected day)
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))",
+          gap: 14,
+          marginBottom: 28,
+          maxWidth: 1200,
+        }}
+      >
+        <div
+          role="button"
+          tabIndex={0}
+          className="card"
+          onClick={() => onMarkerClick(WEEKLY_MARKER.zonesLow)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onMarkerClick(WEEKLY_MARKER.zonesLow);
+            }
+          }}
+          style={{
+            padding: "16px 18px",
+            borderLeft: "4px solid #2dd4bf",
+            background: themeColors.border ? `${themeColors.border}0d` : undefined,
+            cursor: "pointer",
+          }}
+        >
+          <div style={{ fontSize: 10, color: themeColors.textDim, letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>
+            HR ZONES 1–3
+          </div>
+          <div
+            style={{
+              fontSize: 26,
+              fontWeight: 700,
+              color: themeColors.text,
+              fontFamily: "Space Grotesk, sans-serif",
+              lineHeight: 1.15,
+            }}
+          >
+            {hrZonesWeekly.lowMs > 0 ? formatDurationMs(hrZonesWeekly.lowMs) : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: themeColors.textDim, marginTop: 8, lineHeight: 1.4 }}>
+            Time in easy → moderate HR zones from synced workouts (rolling week ending on selected day). Click for trend.
+          </div>
+        </div>
+        <div
+          role="button"
+          tabIndex={0}
+          className="card"
+          onClick={() => onMarkerClick(WEEKLY_MARKER.zonesHigh)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onMarkerClick(WEEKLY_MARKER.zonesHigh);
+            }
+          }}
+          style={{
+            padding: "16px 18px",
+            borderLeft: "4px solid #f97316",
+            background: themeColors.border ? `${themeColors.border}0d` : undefined,
+            cursor: "pointer",
+          }}
+        >
+          <div style={{ fontSize: 10, color: themeColors.textDim, letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>
+            HR ZONES 4–5
+          </div>
+          <div
+            style={{
+              fontSize: 26,
+              fontWeight: 700,
+              color: themeColors.text,
+              fontFamily: "Space Grotesk, sans-serif",
+              lineHeight: 1.15,
+            }}
+          >
+            {hrZonesWeekly.highMs > 0 ? formatDurationMs(hrZonesWeekly.highMs) : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: themeColors.textDim, marginTop: 8, lineHeight: 1.4 }}>
+            Time in hard → max HR zones from synced workouts (rolling week ending on selected day). Click for trend.
+          </div>
+        </div>
+        <div
+          role="button"
+          tabIndex={0}
+          className="card"
+          onClick={() => onMarkerClick(WEEKLY_MARKER.strength)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onMarkerClick(WEEKLY_MARKER.strength);
+            }
+          }}
+          style={{
+            padding: "16px 18px",
+            borderLeft: "4px solid #c084fc",
+            background: themeColors.border ? `${themeColors.border}0d` : undefined,
+            cursor: "pointer",
+          }}
+        >
+          <div style={{ fontSize: 10, color: themeColors.textDim, letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>
+            STRENGTH TRAINING
+          </div>
+          <div
+            style={{
+              fontSize: 26,
+              fontWeight: 700,
+              color: themeColors.text,
+              fontFamily: "Space Grotesk, sans-serif",
+              lineHeight: 1.15,
+            }}
+          >
+            {strengthWeekly.strengthMs > 0 ? formatDurationMs(strengthWeekly.strengthMs) : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: themeColors.textDim, marginTop: 8, lineHeight: 1.4 }}>
+            Sum of workout duration for strength-tagged sports (rolling week ending on selected day). Click for trend.
+          </div>
+        </div>
+      </div>
+      {connected &&
+        (cache?.workouts?.length ?? 0) > 0 &&
+        (hrZonesWeekly.workoutsWithZones === 0 || strengthWeekly.strengthMs === 0) && (
+          <div style={{ fontSize: 12, color: themeColors.textDim, marginTop: -16, marginBottom: 24, maxWidth: 720 }}>
+            {hrZonesWeekly.workoutsWithZones === 0 && (
+              <div>
+                No HR zone breakdown in the last 7 days — zone times appear on scored workouts with heart rate zones (e.g. runs, rides).
+              </div>
+            )}
+            {strengthWeekly.strengthMs === 0 && (
+              <div style={{ marginTop: hrZonesWeekly.workoutsWithZones === 0 ? 8 : 0 }}>
+                No strength-tagged activities in the last 7 days — we include sports such as weightlifting, functional fitness, and strength training.
+              </div>
+            )}
+          </div>
+        )}
 
       {/* Today’s activities */}
       <div
@@ -396,14 +575,20 @@ export function FitnessWhoopView({
                 mark = trend.arrow === "up" ? "▲" : "▼";
                 color = "#94a3b8";
               }
+              const latestDisplayColor =
+                r.id === "whoop_recovery_score" && r.pointCount && r.latestValue != null
+                  ? getWhoopRecoveryRingColor(r.latestValue)
+                  : r.pointCount
+                    ? themeColors.accent
+                    : themeColors.textDim;
               return (
                 <tr
                   key={r.id}
-                  onClick={() => onMarkerClick(r.id)}
+                  onClick={() => openMetricRow(r)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      onMarkerClick(r.id);
+                      openMetricRow(r);
                     }
                   }}
                   tabIndex={0}
@@ -414,7 +599,7 @@ export function FitnessWhoopView({
                     <div style={{ fontSize: 10, color: themeColors.textDim }}>{r.category}</div>
                     <div style={{ fontWeight: 600, color: themeColors.text }}>{r.label}</div>
                   </td>
-                  <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.pointCount ? themeColors.accent : themeColors.textDim }}>
+                  <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: latestDisplayColor }}>
                     {r.latestDisplay}
                   </td>
                   <td style={{ padding: "10px 12px", textAlign: "right", color: themeColors.textDim }}>
@@ -490,27 +675,35 @@ export function FitnessWhoopView({
             <tbody>
               {sortedRows
                 .filter((r) => r.category !== "Sleep")
-                .map((r) => (
+                .map((r) => {
+                const fullLatestColor =
+                  r.id === "whoop_recovery_score" && r.pointCount && r.latestValue != null
+                    ? getWhoopRecoveryRingColor(r.latestValue)
+                    : r.pointCount
+                      ? themeColors.text
+                      : themeColors.textDim;
+                return (
                 <tr
                   key={r.id}
-                  onClick={() => onMarkerClick(r.id)}
+                  onClick={() => openMetricRow(r)}
                   style={{ borderBottom: `1px solid ${themeColors.border}`, cursor: "pointer" }}
                   tabIndex={0}
                   role="button"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      onMarkerClick(r.id);
+                      openMetricRow(r);
                     }
                   }}
                 >
                   <td style={{ padding: "10px 12px", fontWeight: 600, color: themeColors.text }}>{r.label}</td>
-                  <td style={{ padding: "10px 12px", color: r.pointCount ? themeColors.text : themeColors.textDim }}>{r.latestDisplay}</td>
+                  <td style={{ padding: "10px 12px", fontWeight: 600, color: fullLatestColor }}>{r.latestDisplay}</td>
                   <td style={{ padding: "10px 12px", color: themeColors.textDim }}>{r.unit}</td>
                   <td style={{ padding: "10px 12px", textAlign: "right", color: themeColors.textDim }}>{r.pointCount}</td>
                   <td style={{ padding: "10px 12px", color: themeColors.textDim }}>{r.category}</td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         </div>

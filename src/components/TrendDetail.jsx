@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ComposedChart,
   Line,
@@ -15,9 +16,14 @@ import { getStatus, statusColor } from "../utils/rangeStatus.js";
 import { RANGE_BAND_FILL, RANGE_COLORS, RANGE_BG } from "../constants/rangeColors.js";
 import { MonitorFrequencyBadge } from "./MonitorFrequencyBadge.jsx";
 
-export function TrendDetail({ name, personEntries, onBack, themeColors }) {
+/**
+ * @param {{ name: string, personEntries: object[], onBack: () => void, themeColors: object, inlineManualEntry?: boolean, onSaveReading?: (date: string, value: string) => void }} props
+ */
+export function TrendDetail({ name, personEntries, onBack, themeColors, inlineManualEntry = false, onSaveReading }) {
   const b = BIOMARKER_DB[name];
   if (!b) return null;
+  const [addDate, setAddDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [addValue, setAddValue] = useState("");
   const data = personEntries
     .filter((e) => e.biomarkers?.[name] !== undefined)
     .map((e) => {
@@ -119,9 +125,46 @@ export function TrendDetail({ name, personEntries, onBack, themeColors }) {
     );
   };
 
+  const submitReading = () => {
+    const v = addValue.trim();
+    if (!v || !onSaveReading) return;
+    onSaveReading(addDate, v);
+    setAddValue("");
+  };
+
   return (
     <div style={{ animation: "slideIn 0.3s ease" }}>
       <button className="btn btn-secondary" onClick={onBack} style={{ marginBottom: 20 }}>← Back</button>
+      {inlineManualEntry && onSaveReading && (
+        <div className="card" style={{ marginBottom: 16, maxWidth: 720 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#c8d8f0", marginBottom: 12, fontFamily: "Space Grotesk, sans-serif" }}>Add reading</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11, color: "#4a6a8a" }}>
+              Date
+              <input
+                type="date"
+                value={addDate}
+                onChange={(e) => setAddDate(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #1a3050", background: "#060d1e", color: "#c8d8f0", fontSize: 13 }}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11, color: "#4a6a8a" }}>
+              Value ({b.unit})
+              <input
+                type="number"
+                step="any"
+                placeholder="—"
+                value={addValue}
+                onChange={(e) => setAddValue(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #1a3050", background: "#060d1e", color: "#c8d8f0", fontSize: 13, minWidth: 120 }}
+              />
+            </label>
+            <button type="button" className="btn btn-primary" onClick={submitReading} style={{ marginBottom: 1 }}>
+              Save reading
+            </button>
+          </div>
+        </div>
+      )}
       <div className="card" style={{ marginBottom: 16, borderLeft: `4px solid ${statusColor(status)}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
           <div>

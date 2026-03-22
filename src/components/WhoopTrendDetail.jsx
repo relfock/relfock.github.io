@@ -22,6 +22,7 @@ import {
 } from "../data/whoopTrendMath.js";
 import { endOfLocalYmdMs } from "../data/whoopFitnessDate.js";
 import { compareLatestToMonthAverage } from "../data/whoopMarkerDirection.js";
+import { getWhoopRecoveryRingColor } from "../data/whoopScoreColors.js";
 
 function fmtAvg(n, unit) {
   if (n == null || Number.isNaN(n)) return "—";
@@ -121,7 +122,12 @@ export function WhoopTrendDetail({ markerId, cache, onBack, themeColors, embedde
     return "Within your typical range in this window.";
   }, [chartKind, rangeAvg, bandLow, bandHigh]);
 
-  const lineColor = themeColors.accent || "#38bdf8";
+  const lineColor = useMemo(() => {
+    if (markerId === "whoop_recovery_score" && rangeAvg != null && Number.isFinite(Number(rangeAvg))) {
+      return getWhoopRecoveryRingColor(rangeAvg);
+    }
+    return themeColors.accent || "#38bdf8";
+  }, [markerId, rangeAvg, themeColors.accent]);
 
   let yDomain = [0, 1];
   let yTicks = [];
@@ -213,6 +219,9 @@ export function WhoopTrendDetail({ markerId, cache, onBack, themeColors, embedde
 
   function barFill(entry) {
     if (chartKind === "line") return lineColor;
+    if (markerId === "whoop_recovery_score" && entry.avg != null && Number.isFinite(Number(entry.avg))) {
+      return getWhoopRecoveryRingColor(entry.avg);
+    }
     const g = entry.monthTrend?.good;
     if (g === true) return "#4ade80";
     if (g === false) return "#fb923c";
@@ -239,7 +248,14 @@ export function WhoopTrendDetail({ markerId, cache, onBack, themeColors, embedde
       >
         <div style={{ fontSize: 11, color: "#6a8aaa", marginBottom: 6 }}>{title}</div>
         <div style={{ fontSize: 14, fontWeight: 700, color: lineColor, fontFamily: "Space Grotesk, sans-serif" }}>
-          {p.hasData ? fmtAvg(p.avg, unit) : "No data"}
+          {p.hasData ? (
+            <>
+              {fmtAvg(p.avg, unit)}
+              {unit?.toLowerCase() === "h" ? " h" : ""}
+            </>
+          ) : (
+            "No data"
+          )}
         </div>
         {chartKind === "bar" && p.hasData && p.deltaPct != null && (
           <div style={{ fontSize: 12, color: p.deltaPct >= 0 ? "#6acc9a" : "#fb923c", marginTop: 6 }}>

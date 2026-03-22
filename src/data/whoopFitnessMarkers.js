@@ -3,6 +3,11 @@
  */
 
 import { kilojouleToKcal } from "./whoopActivities.js";
+import {
+  buildRollingWeeklyHrZoneLowSeries,
+  buildRollingWeeklyHrZoneHighSeries,
+  buildRollingWeeklyStrengthSeries,
+} from "./whoopHrZonesWeekly.js";
 
 /** @typedef {{ sortTime: string, date: string, value: number, displayValue: string }} FitnessPoint */
 
@@ -396,6 +401,27 @@ export function getWhoopFitnessMarkerDefs() {
           const km = Number(m) / 1000;
           return { value: km, display: `${km.toFixed(2)} km` };
         }),
+    },
+    {
+      id: "whoop_weekly_hr_zones_low",
+      label: "HR zones 1–3 (7d total)",
+      unit: "h",
+      category: "Workout",
+      extract: (c) => buildRollingWeeklyHrZoneLowSeries(c?.workouts),
+    },
+    {
+      id: "whoop_weekly_hr_zones_high",
+      label: "HR zones 4–5 (7d total)",
+      unit: "h",
+      category: "Workout",
+      extract: (c) => buildRollingWeeklyHrZoneHighSeries(c?.workouts),
+    },
+    {
+      id: "whoop_weekly_strength_time",
+      label: "Strength training (7d total)",
+      unit: "h",
+      category: "Workout",
+      extract: (c) => buildRollingWeeklyStrengthSeries(c?.workouts),
     },
     {
       id: "whoop_body_height",

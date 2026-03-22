@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { BIOMARKER_DB } from "./src/data/biomarkerDb.js";
 import {
   CATEGORIES,
+  CATEGORIES_MAIN_BIOMARKERS,
+  FITNESS_LAB_BIOMARKER_KEYS,
+  FITNESS_LAB_CATEGORY,
   DERIVED_BIOMARKERS,
   getBiomarkersForPerson,
   computeDerivedBiomarkers,
@@ -157,6 +160,7 @@ export default function App() {
   const [importTargetPersonId, setImportTargetPersonId] = useState(null);
   const [showAddPersonModal, setShowAddPersonModal] = useState(false);
   const [showManualEntry, setShowManualEntry] = useState(false);
+  const [manualEntryInitialCategory, setManualEntryInitialCategory] = useState("All");
   const [showInfoModal, setShowInfoModal] = useState(null);
   const [filterCat, setFilterCat] = useState("All");
   const [filterRecord, setFilterRecord] = useState("all"); // "all" | "noRecord"
@@ -203,8 +207,8 @@ export default function App() {
   const [chatAttachedFiles, setChatAttachedFiles] = useState([]);
   const [chatMinimized, setChatMinimized] = useState(false);
   const [chatWindowRect, setChatWindowRect] = useState(() => {
-    if (typeof window === "undefined") return { x: 100, y: 100, w: 540, h: 420 };
-    const w = Math.min(560, window.innerWidth - 40);
+    if (typeof window === "undefined") return { x: 100, y: 100, w: 648, h: 420 };
+    const w = Math.min(672, window.innerWidth - 40);
     const h = Math.min(440, window.innerHeight - 80);
     return { x: Math.max(0, (window.innerWidth - w) / 2), y: Math.max(0, (window.innerHeight - h) / 2), w, h };
   });
@@ -767,6 +771,7 @@ export default function App() {
   const latestEntry = personEntries[personEntries.length - 1];
 
   const allBiomarkers = getBiomarkersForPerson(currentPerson);
+  const biomarkersForMainView = allBiomarkers.filter((b) => BIOMARKER_DB[b]?.category !== FITNESS_LAB_CATEGORY);
 
   const getTrend = (name) => {
     const vals = personEntries.map(e => e.biomarkers?.[name]).filter(v => v !== undefined);
@@ -795,8 +800,8 @@ export default function App() {
   const cumulativeSnapshot = getCumulativeSnapshot();
 
   const hasNoRecord = (name) => !cumulativeSnapshot[name];
-  const noRecordCount = allBiomarkers.filter(hasNoRecord).length;
-  const totalBiomarkersCount = allBiomarkers.length;
+  const noRecordCount = biomarkersForMainView.filter(hasNoRecord).length;
+  const totalBiomarkersCount = biomarkersForMainView.length;
 
   const matchesStatusFilter = (name) => {
     if (!statusFilter) return true;
@@ -806,7 +811,7 @@ export default function App() {
     return statusFilter === "high" ? (s === "high" || s === "out-of-range") : s === statusFilter;
   };
 
-  const filteredBiomarkers = allBiomarkers.filter(b => {
+  const filteredBiomarkers = biomarkersForMainView.filter(b => {
     const cat = BIOMARKER_DB[b].category;
     const matchCat = filterCat === "All" || cat === filterCat;
     const matchSearch = !searchTerm || b.toLowerCase().includes(searchTerm.toLowerCase()) || cat.toLowerCase().includes(searchTerm.toLowerCase());
@@ -817,6 +822,7 @@ export default function App() {
   const getStatusCounts = () => {
     const counts = { optimal: 0, sufficient: 0, high: 0, low: 0, elite: 0, total: 0 };
     Object.entries(cumulativeSnapshot).forEach(([name, { val }]) => {
+      if (BIOMARKER_DB[name]?.category === FITNESS_LAB_CATEGORY) return;
       const s = getStatus(name, val);
       if (s === "optimal") counts.optimal++;
       else if (s === "sufficient") counts.sufficient++;
@@ -831,7 +837,8 @@ export default function App() {
   const counts = getStatusCounts();
   const healthScore = counts.total > 0 ? Math.round((counts.optimal + counts.elite + counts.sufficient * 0.5) / counts.total * 100) : null;
 
-  const navBiomarkersActive = view === "biomarkers" || (view === "trends" && viewBeforeTrendDetail !== "history");
+  const navBiomarkersActive = view === "biomarkers" || (view === "trends" && viewBeforeTrendDetail === "biomarkers");
+  const navFitnessActive = view === "fitness" || (view === "trends" && viewBeforeTrendDetail === "fitness");
   const navHistoryActive = view === "history" || (view === "trends" && viewBeforeTrendDetail === "history");
   const categorySidebarActive = view === "biomarkers" || (view === "trends" && viewBeforeTrendDetail === "biomarkers");
 
@@ -1217,11 +1224,47 @@ export default function App() {
         const url = `${base}/v1beta/models/gemini-2.5-flash:generateContent`;
         const headers = { "Content-Type": "application/json" };
         if (key) headers["x-goog-api-key"] = key;
-        const contents = messagesForApi.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.content }] }));
-        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.2 } }) });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        reply = (data.candidates?.[0]?.content?.parts || []).map((p) => p?.text || "").join("");
+        const toGeminiContents = (msgs) =>
+          msgs.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.content }] }));
+        const GEMINI_CHAT_MAX_OUTPUT = 65536;
+        const GEMINI_CHAT_MAX_CONTINUATIONS = 32;
+        let genContents = toGeminiContents(messagesForApi);
+        let accumulated = "";
+        for (let round = 0; round <= GEMINI_CHAT_MAX_CONTINUATIONS; round++) {
+          const res = await fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              contents: genContents,
+              generationConfig: { maxOutputTokens: GEMINI_CHAT_MAX_OUTPUT, temperature: 0.2 },
+            }),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          const cand = data.candidates?.[0];
+          if (!cand) {
+            const block = data.promptFeedback?.blockReason;
+            throw new Error(block ? `Gemini blocked the request: ${block}` : "Unexpected Gemini response: no candidates.");
+          }
+          const chunk = (cand.content?.parts || []).map((p) => p?.text || "").join("");
+          accumulated += chunk;
+          const finishReason = cand.finishReason ?? cand.finish_reason;
+          if (finishReason !== "MAX_TOKENS") break;
+          if (!chunk.trim()) break;
+          genContents = [
+            ...toGeminiContents(messagesForApi),
+            { role: "model", parts: [{ text: accumulated }] },
+            {
+              role: "user",
+              parts: [
+                {
+                  text: "Continue your previous response from exactly where it stopped. Output only the continuation; do not repeat text you already gave.",
+                },
+              ],
+            },
+          ];
+        }
+        reply = accumulated;
       }
       if (reply.trim()) {
         setChatConversations((prev) =>
@@ -1608,7 +1651,7 @@ export default function App() {
                     style={{ display: "block", width: "100%", justifyContent: "flex-start", marginBottom: 4, fontSize: 12 }}
                     disabled={!currentPerson}
                     title={!currentPerson ? "Add a person first" : undefined}
-                    onClick={() => { setShowManualEntry(true); setShowSettingsMenu(false); }}
+                    onClick={() => { setManualEntryInitialCategory("All"); setShowManualEntry(true); setShowSettingsMenu(false); }}
                   >
                     + Manual Entry
                   </button>
@@ -1780,7 +1823,7 @@ export default function App() {
             <span style={{ fontSize: 16 }}>⬡</span>
             Biomarkers
           </button>
-          <button type="button" onClick={() => { setSelectedBiomarker(null); setSelectedFitnessMarker(null); setViewBeforeTrendDetail(null); setView("fitness"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: view === "fitness" ? `${themeColors.accent}14` : "transparent", color: view === "fitness" ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
+          <button type="button" onClick={() => { setSelectedBiomarker(null); setSelectedFitnessMarker(null); setViewBeforeTrendDetail(null); setView("fitness"); if (isMobile) setSidebarOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", minHeight: 44, borderRadius: 8, border: "none", cursor: "pointer", background: navFitnessActive ? `${themeColors.accent}14` : "transparent", color: navFitnessActive ? themeColors.accent : themeColors.textMuted, transition: "all 0.2s", textAlign: "left", fontSize: 13, fontFamily: "inherit" }}>
             <span style={{ fontSize: 16 }}>◎</span>
             Fitness
           </button>
@@ -1789,7 +1832,7 @@ export default function App() {
             History
           </button>
           <div style={{ borderTop: `1px solid ${themeColors.border}`, marginTop: 8, paddingTop: 8 }}>
-            {CATEGORIES.map(cat => (
+            {CATEGORIES_MAIN_BIOMARKERS.map(cat => (
               <button key={cat} type="button" onClick={() => { setFilterCat(cat); setSelectedBiomarker(null); setViewBeforeTrendDetail(null); setView("biomarkers"); if (isMobile) setSidebarOpen(false); }} style={{ display: "block", width: "100%", padding: "10px 12px", minHeight: 40, borderRadius: 6, border: "none", cursor: "pointer", background: filterCat === cat && categorySidebarActive ? `${themeColors.accent}0d` : "transparent", color: filterCat === cat && categorySidebarActive ? themeColors.textMuted : themeColors.textDim, transition: "all 0.2s", textAlign: "left", fontSize: 11, fontFamily: "inherit" }}>
                 {cat}
               </button>
@@ -1820,7 +1863,7 @@ export default function App() {
                   <div style={{ fontSize: 12, color: "#3a5a7a", marginBottom: 16 }}>Import a PDF or add manual entries — you can still browse all markers below.</div>
                   <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
                     <button type="button" className="btn btn-primary" onClick={() => { setImportTargetPersonId(selectedPerson); setShowImportModal(true); }}>📄 Import LAB results</button>
-                    <button type="button" className="btn btn-secondary" onClick={() => setShowManualEntry(true)}>+ Manual Entry</button>
+                    <button type="button" className="btn btn-secondary" onClick={() => { setManualEntryInitialCategory("All"); setShowManualEntry(true); }}>+ Manual Entry</button>
                   </div>
                 </div>
               )}
@@ -1854,7 +1897,7 @@ export default function App() {
               <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
                 <input placeholder="Search biomarkers..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{ maxWidth: 260 }} />
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {["All", ...CATEGORIES].map(cat => (
+                  {["All", ...CATEGORIES_MAIN_BIOMARKERS].map(cat => (
                     <button key={cat} className={`tab-btn ${filterCat === cat ? "active" : ""}`} onClick={() => setFilterCat(cat)} style={{ fontSize: 11 }}>{cat}</button>
                   ))}
                   <button
@@ -2082,6 +2125,12 @@ export default function App() {
                   setViewBeforeTrendDetail(null);
                 }}
                 themeColors={themeColors}
+                inlineManualEntry={viewBeforeTrendDetail === "fitness" && FITNESS_LAB_BIOMARKER_KEYS.includes(selectedBiomarker)}
+                onSaveReading={
+                  viewBeforeTrendDetail === "fitness" && FITNESS_LAB_BIOMARKER_KEYS.includes(selectedBiomarker)
+                    ? (date, value) => addEntry(selectedPerson, date, { [selectedBiomarker]: value })
+                    : undefined
+                }
               />
             </div>
           )}
@@ -2121,6 +2170,7 @@ export default function App() {
                   themeColors={themeColors}
                   viewDate={fitnessViewDate}
                   cache={whoopCache[selectedPerson] || null}
+                  personEntries={personEntries}
                   connected={Boolean(
                     whoopSettings.tokensByPersonId?.[selectedPerson]?.refreshToken ||
                       whoopSettings.tokensByPersonId?.[selectedPerson]?.accessToken
@@ -2128,6 +2178,11 @@ export default function App() {
                   syncState={whoopSyncState}
                   isMobile={isMobile}
                   onMarkerClick={(id) => setSelectedFitnessMarker(id)}
+                  onLabVitalClick={(name) => {
+                    setViewBeforeTrendDetail("fitness");
+                    setSelectedBiomarker(name);
+                    setView("trends");
+                  }}
                 />
               )}
             </>
@@ -2382,7 +2437,7 @@ export default function App() {
             top: y,
             width: w,
             height: isMin ? 44 : h,
-            minWidth: isMin ? 280 : 480,
+            minWidth: isMin ? 336 : 576,
             minHeight: isMin ? 44 : 280,
             maxWidth: window.innerWidth - 20,
             maxHeight: window.innerHeight - 40,
@@ -2599,7 +2654,22 @@ export default function App() {
           setShowImportModal(false);
           setImportTargetPersonId(null);
         }} personName={people.find(p => p.id === importTargetPersonId)?.name} />}
-      {showManualEntry && <ManualEntryModal onClose={() => setShowManualEntry(false)} onSave={(date, biomarkers) => { addEntry(selectedPerson, date, biomarkers); setShowManualEntry(false); }} person={currentPerson} />}
+      {showManualEntry && (
+        <ManualEntryModal
+          key={manualEntryInitialCategory}
+          initialCatFilter={manualEntryInitialCategory}
+          onClose={() => {
+            setShowManualEntry(false);
+            setManualEntryInitialCategory("All");
+          }}
+          onSave={(date, biomarkers) => {
+            addEntry(selectedPerson, date, biomarkers);
+            setShowManualEntry(false);
+            setManualEntryInitialCategory("All");
+          }}
+          person={currentPerson}
+        />
+      )}
       {showAddPersonModal && <AddPersonModal onClose={() => setShowAddPersonModal(false)} onAdd={addPerson} />}
       {showEditPersonModal && currentPerson && (
         <EditPersonModal
@@ -3660,11 +3730,15 @@ REMINDER — Patient name: Only the text that follows "Patient" or "Բուժառ
 
 
 // ─── MANUAL ENTRY MODAL ───────────────────────────────────────────────────────
-function ManualEntryModal({ onClose, onSave, person }) {
+function ManualEntryModal({ onClose, onSave, person, initialCatFilter = "All" }) {
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [values, setValues] = useState({});
-  const [catFilter, setCatFilter] = useState("All");
+  const [catFilter, setCatFilter] = useState(initialCatFilter);
   const [searchTerm, setSearchTerm] = useState("");
+
+  useEffect(() => {
+    setCatFilter(initialCatFilter);
+  }, [initialCatFilter]);
 
   const handleSave = () => {
     const nonEmpty = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== "" && v !== undefined));

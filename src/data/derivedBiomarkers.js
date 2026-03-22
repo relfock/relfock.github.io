@@ -3,6 +3,21 @@ import { parseLabValue } from "../utils/parseLabValue.js";
 
 export const CATEGORIES = [...new Set(Object.values(BIOMARKER_DB).map((b) => b.category))];
 
+/** Category label for resting HR, BP, VO₂ max — shown under Fitness, not the main Biomarkers grid */
+export const FITNESS_LAB_CATEGORY = "Fitness";
+
+/** Ordered keys for the Fitness view lab/manual section (must match BIOMARKER_DB category Fitness) */
+/** Fitness trend + inline entry for lab-only metrics (resting HR uses WHOOP whoop_resting_hr only). */
+export const FITNESS_LAB_BIOMARKER_KEYS = [
+  "Core Temperature",
+  "Blood Pressure Systolic",
+  "Blood Pressure Diastolic",
+  "VO2 Max",
+];
+
+/** Category tabs / sidebar for the Biomarkers view (excludes Fitness-only markers) */
+export const CATEGORIES_MAIN_BIOMARKERS = CATEGORIES.filter((c) => c !== FITNESS_LAB_CATEGORY);
+
 export function getBiomarkersForPerson(person) {
   const all = Object.keys(BIOMARKER_DB);
   if (!person?.gender || person.gender === "Other") return all;
@@ -125,16 +140,22 @@ export const DERIVED_BIOMARKERS = {
   },
 };
 
-export function getNumericFromBiomarkers(biomarkers, key) {
-  let v = biomarkers[key];
+/** Raw scalar after canonical / case-insensitive key match and { val } unwrap (for display). */
+export function getStoredBiomarkerValue(biomarkers, key) {
+  let v = biomarkers?.[key];
   if (v === undefined) {
     const keyLower = key.toLowerCase();
     const foundKey = Object.keys(biomarkers || {}).find((k) => k.toLowerCase() === keyLower);
     v = foundKey != null ? biomarkers[foundKey] : undefined;
   }
   if (v == null || v === "") return null;
-  // Support snapshot shape { val, date } (e.g. cumulativeSnapshot) as well as raw values
   if (typeof v === "object" && v !== null && "val" in v) v = v.val;
+  return v;
+}
+
+export function getNumericFromBiomarkers(biomarkers, key) {
+  const v = getStoredBiomarkerValue(biomarkers, key);
+  if (v == null) return null;
   const num = typeof v === "object" && v !== null && "numeric" in v ? v.numeric : parseLabValue(v).numeric;
   return Number.isFinite(num) ? num : null;
 }
