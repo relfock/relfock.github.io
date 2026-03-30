@@ -412,6 +412,18 @@ export const BIOMARKER_DB = {
     improve: "Control blood pressure (<120/80). Optimize blood sugar. Stay well hydrated. Limit NSAIDs and nephrotoxic substances. SGLT2 inhibitors (empagliflozin, dapagliflozin) have proven nephroprotective effects.",
     icon: "⚡",
   },
+  "eGFR (Cystatin C)": {
+    category: "Kidney",
+    unit: "mL/min/1.73m²",
+    monitorFrequency: "6mo",
+    optimal: [90, 9999],
+    sufficient: [59, 90],
+    high: [0, 0],
+    low: [0, 59],
+    description: "eGFR estimated from cystatin C (e.g. S-Cystatin C eGFR). Less muscle-dependent than creatinine-based eGFR; interpret alongside creatinine-based eGFR when both are reported.",
+    improve: "Same as eGFR: blood pressure, hydration, limit nephrotoxins.",
+    icon: "⚡",
+  },
   "BUN": {
     category: "Kidney",
     unit: "mg/dL",
@@ -592,6 +604,18 @@ export const BIOMARKER_DB = {
     low: [0, 0],            // No lower threshold
     description: "Thyroid peroxidase (TPO) antibodies indicate autoimmune thyroid disease (Hashimoto's). Blueprint baseline panel. Positive result explains hypothyroidism and guides management.",
     improve: "Selenium 200 mcg/day may reduce antibody titers; treat hypothyroidism if present.",
+    icon: "🦋",
+  },
+  "PTH": {
+    category: "Hormones",
+    unit: "pmol/L",
+    monitorFrequency: "1y",
+    optimal: [1.2, 8.4],
+    sufficient: [1.2, 8.4],
+    high: [8.4, 9999],
+    low: [0, 1.2],
+    description: "Parathyroid hormone (intact PTH), often reported as P-PTH in pmol/L (Nordic labs). Interpret with calcium, vitamin D, and phosphate.",
+    improve: "Optimize vitamin D and calcium with clinician guidance; evaluate primary vs secondary hyperparathyroidism if abnormal.",
     icon: "🦋",
   },
   "Thyroglobulin Antibodies": {

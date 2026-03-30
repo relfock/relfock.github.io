@@ -173,11 +173,21 @@ export function getCalculatedFrom(name) {
   return [...(def.from || []), ...(def.optionalFrom || [])];
 }
 
+/** True when this key already has a numeric lab value (do not replace with a derived estimate). */
+function hasDirectNumericMeasurement(biomarkers, key) {
+  const n = getNumericFromBiomarkers(biomarkers, key);
+  return n != null && Number.isFinite(n);
+}
+
 export function computeDerivedBiomarkers(biomarkers) {
   if (!biomarkers || typeof biomarkers !== "object") return biomarkers || {};
   const out = { ...biomarkers };
   Object.entries(DERIVED_BIOMARKERS).forEach(([name, def]) => {
     const { from: sources, formula } = def;
+    if (name === "LDL Cholesterol" && hasDirectNumericMeasurement(out, "LDL Cholesterol")) return;
+    if (name === "Non-HDL Cholesterol" && hasDirectNumericMeasurement(out, "Non-HDL Cholesterol")) return;
+    if (name === "Iron Saturation" && hasDirectNumericMeasurement(out, "Iron Saturation")) return;
+    if (name === "ApoB/ApoA-1 Ratio" && hasDirectNumericMeasurement(out, "ApoB/ApoA-1 Ratio")) return;
     const vals = sources.map((s) => getNumericFromBiomarkers(out, s));
     if (!vals.every((v) => v != null)) return;
     const forceRecompute = name === "Cholesterol/HDL Ratio";

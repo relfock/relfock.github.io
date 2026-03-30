@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { BIOMARKER_DB } from "./src/data/biomarkerDb.js";
 import {
   CATEGORIES,
@@ -143,6 +143,60 @@ function whoopFromBackupData(data) {
   return normalizeWhoopSettings(null);
 }
 
+const CHAT_STATE_STORAGE_KEY = "biotracker-chat-state";
+
+const CHAT_PROVIDER_IDS = new Set(["anthropic", "openai", "groq", "groq-compound", "ollama", "gemini"]);
+
+function sanitizeChatMessage(m) {
+  if (!m || typeof m !== "object") return null;
+  const role = m.role === "user" || m.role === "assistant" ? m.role : null;
+  if (!role) return null;
+  const content = typeof m.content === "string" ? m.content : "";
+  const out = { role, content };
+  if (typeof m.displayContent === "string") out.displayContent = m.displayContent;
+  return out;
+}
+
+function loadChatStateFromStorage() {
+  const empty = () => ({
+    chatConversations: [{ id: 1, messages: [] }],
+    activeChatId: 1,
+    chatProvider: "groq",
+  });
+  if (typeof localStorage === "undefined") return empty();
+  try {
+    const raw = localStorage.getItem(CHAT_STATE_STORAGE_KEY);
+    if (!raw) return empty();
+    const o = JSON.parse(raw);
+    if (!Array.isArray(o.chatConversations) || o.chatConversations.length === 0) return empty();
+    const conversations = o.chatConversations
+      .map((c) => {
+        const id = typeof c.id === "number" && Number.isFinite(c.id) ? c.id : null;
+        if (id == null) return null;
+        const messages = Array.isArray(c.messages) ? c.messages.map(sanitizeChatMessage).filter(Boolean) : [];
+        return { id, messages };
+      })
+      .filter(Boolean);
+    if (conversations.length === 0) return empty();
+    const activeOk = typeof o.activeChatId === "number" && conversations.some((c) => c.id === o.activeChatId);
+    const activeChatId = activeOk ? o.activeChatId : conversations[0].id;
+    const chatProvider =
+      typeof o.chatProvider === "string" && CHAT_PROVIDER_IDS.has(o.chatProvider) ? o.chatProvider : "groq";
+    return { chatConversations: conversations, activeChatId, chatProvider };
+  } catch {
+    return empty();
+  }
+}
+
+function persistChatStateToStorage(chatConversations, activeChatId, chatProvider) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(CHAT_STATE_STORAGE_KEY, JSON.stringify({ chatConversations, activeChatId, chatProvider }));
+  } catch {
+    /* quota or private mode */
+  }
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [people, setPeople] = useState(INIT_PEOPLE);
@@ -194,9 +248,10 @@ export default function App() {
   const [saveError, setSaveError] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showChatPanel, setShowChatPanel] = useState(false);
-  const [chatConversations, setChatConversations] = useState(() => [{ id: 1, messages: [] }]);
-  const [activeChatId, setActiveChatId] = useState(1);
-  const [chatProvider, setChatProvider] = useState("groq");
+  const initialChatState = useMemo(() => loadChatStateFromStorage(), []);
+  const [chatConversations, setChatConversations] = useState(initialChatState.chatConversations);
+  const [activeChatId, setActiveChatId] = useState(initialChatState.activeChatId);
+  const [chatProvider, setChatProvider] = useState(initialChatState.chatProvider);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatWaitSeconds, setChatWaitSeconds] = useState(null);
@@ -216,6 +271,11 @@ export default function App() {
   const chatResizeStart = useRef(null);
   const chatInputRef = useRef(null);
   const chatAtListRef = useRef(null);
+
+  useEffect(() => {
+    persistChatStateToStorage(chatConversations, activeChatId, chatProvider);
+  }, [chatConversations, activeChatId, chatProvider]);
+
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   const [theme, setTheme] = useState(() => {
     if (typeof window === "undefined") return "dark";
@@ -566,6 +626,23 @@ export default function App() {
     save(people, newEntries);
   };
 
+  /** Merge or remove keys on one history entry (used for fitness manual edit/delete). */
+  const patchPersonEntryBiomarkers = (personId, entryId, patch) => {
+    const list = entries[personId] || [];
+    const newList = list.map((e) => {
+      if (e.id !== entryId) return e;
+      const nextBio = { ...(e.biomarkers || {}) };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) delete nextBio[k];
+        else nextBio[k] = typeof v === "string" ? v : String(v);
+      }
+      return { ...e, biomarkers: nextBio };
+    });
+    const newEntries = { ...entries, [personId]: newList };
+    setEntries(newEntries);
+    save(people, newEntries);
+  };
+
   const addPerson = (person) => {
     const newPeople = [...people, { ...person, id: String(Date.now()), avatar: person.name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase() }];
     setPeople(newPeople);
@@ -784,13 +861,26 @@ export default function App() {
     return "stable";
   };
 
-  // Cumulative snapshot: for each biomarker, the most recent measured value across ALL entries
+  /** Fitness / manual vitals — excluded from biomarker snapshot, History, and status counts. */
+  const isFitnessLabMarkerName = (name) =>
+    FITNESS_LAB_BIOMARKER_KEYS.includes(name) || BIOMARKER_DB[name]?.category === FITNESS_LAB_CATEGORY;
+
+  /** True if this value is a real stored measurement (excludes empty slots so “No record” matches truth). */
+  const hasMeaningfulStoredValue = (val) => {
+    if (val === undefined || val === null) return false;
+    if (typeof val === "string" && val.trim() === "") return false;
+    const { display, numeric } = parseLabValue(val);
+    if (display === "–" || display === "—") return false;
+    return typeof numeric === "number" && Number.isFinite(numeric);
+  };
+
+  // Cumulative snapshot: most recent meaningful value per marker (any prior bloodwork counts; latest row may omit a marker).
   const getCumulativeSnapshot = () => {
     const snapshot = {}; // { biomarkerName: { val, date } }
-    // personEntries are sorted oldest→newest; include derived biomarkers computed per entry
-    personEntries.forEach(entry => {
+    personEntries.forEach((entry) => {
       const withDerived = computeDerivedBiomarkers(entry.biomarkers || {});
       Object.entries(withDerived).forEach(([name, val]) => {
+        if (!hasMeaningfulStoredValue(val)) return;
         snapshot[name] = { val, date: entry.date };
       });
     });
@@ -798,14 +888,15 @@ export default function App() {
   };
 
   const cumulativeSnapshot = getCumulativeSnapshot();
+  const cumulativeSnapshotMain = Object.fromEntries(Object.entries(cumulativeSnapshot).filter(([k]) => !isFitnessLabMarkerName(k)));
 
-  const hasNoRecord = (name) => !cumulativeSnapshot[name];
+  const hasNoRecord = (name) => !cumulativeSnapshotMain[name];
   const noRecordCount = biomarkersForMainView.filter(hasNoRecord).length;
   const totalBiomarkersCount = biomarkersForMainView.length;
 
   const matchesStatusFilter = (name) => {
     if (!statusFilter) return true;
-    const snap = cumulativeSnapshot[name];
+    const snap = cumulativeSnapshotMain[name];
     if (!snap || snap.val === undefined) return false;
     const s = getStatus(name, snap.val);
     return statusFilter === "high" ? (s === "high" || s === "out-of-range") : s === statusFilter;
@@ -821,7 +912,7 @@ export default function App() {
 
   const getStatusCounts = () => {
     const counts = { optimal: 0, sufficient: 0, high: 0, low: 0, elite: 0, total: 0 };
-    Object.entries(cumulativeSnapshot).forEach(([name, { val }]) => {
+    Object.entries(cumulativeSnapshotMain).forEach(([name, { val }]) => {
       if (BIOMARKER_DB[name]?.category === FITNESS_LAB_CATEGORY) return;
       const s = getStatus(name, val);
       if (s === "optimal") counts.optimal++;
@@ -1856,7 +1947,7 @@ export default function App() {
           {/* ── BIOMARKERS VIEW ── */}
           {currentPerson && view === "biomarkers" && (
             <div style={{ animation: "slideIn 0.3s ease" }}>
-              {Object.keys(cumulativeSnapshot).length === 0 && (
+              {Object.keys(cumulativeSnapshotMain).length === 0 && (
                 <div className="card" style={{ textAlign: "center", padding: 40, marginBottom: 20 }}>
                   <div style={{ fontSize: 36, marginBottom: 12 }}>🧬</div>
                   <div style={{ fontSize: 16, color: "#8aabcc", marginBottom: 6, fontFamily: "Space Grotesk, sans-serif" }}>No bloodwork data yet</div>
@@ -1933,7 +2024,7 @@ export default function App() {
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
                 {filteredBiomarkers.map(name => {
                   const b = BIOMARKER_DB[name];
-                  const snap = cumulativeSnapshot[name];
+                  const snap = cumulativeSnapshotMain[name];
                   const snapVal = snap?.val;
                   const snapDate = snap?.date;
                   const status = snapVal !== undefined ? getStatus(name, snapVal) : "unknown";
@@ -1992,7 +2083,7 @@ export default function App() {
                   if (worsening) return 2;
                   return 3;
                 };
-                const hasData = (name) => cumulativeSnapshot[name]?.val !== undefined;
+                const hasData = (name) => cumulativeSnapshotMain[name]?.val !== undefined;
                 const sortedForTable = [...filteredBiomarkers].sort((a, b) => {
                   const dir = biomarkersTableSort.dir === "asc" ? 1 : -1;
                   const dataA = hasData(a);
@@ -2004,8 +2095,8 @@ export default function App() {
                     return dir * a.localeCompare(b, undefined, { sensitivity: "base" });
                   }
                   if (biomarkersTableSort.by === "status") {
-                    const statusA = getStatus(a, cumulativeSnapshot[a].val);
-                    const statusB = getStatus(b, cumulativeSnapshot[b].val);
+                    const statusA = getStatus(a, cumulativeSnapshotMain[a].val);
+                    const statusB = getStatus(b, cumulativeSnapshotMain[b].val);
                     const rankA = STATUS_SORT_ORDER[statusA] ?? 6;
                     const rankB = STATUS_SORT_ORDER[statusB] ?? 6;
                     return dir * (rankA - rankB || a.localeCompare(b));
@@ -2021,13 +2112,13 @@ export default function App() {
                     return dir * (rA - rB || a.localeCompare(b));
                   }
                   if (biomarkersTableSort.by === "value") {
-                    const numA = parseLabValue(cumulativeSnapshot[a].val).numeric;
-                    const numB = parseLabValue(cumulativeSnapshot[b].val).numeric;
+                    const numA = parseLabValue(cumulativeSnapshotMain[a].val).numeric;
+                    const numB = parseLabValue(cumulativeSnapshotMain[b].val).numeric;
                     return dir * ((Number.isFinite(numA) ? numA : -Infinity) - (Number.isFinite(numB) ? numB : -Infinity)) || dir * a.localeCompare(b);
                   }
                   if (biomarkersTableSort.by === "range") {
-                    const statusA = getStatus(a, cumulativeSnapshot[a].val);
-                    const statusB = getStatus(b, cumulativeSnapshot[b].val);
+                    const statusA = getStatus(a, cumulativeSnapshotMain[a].val);
+                    const statusB = getStatus(b, cumulativeSnapshotMain[b].val);
                     const rankA = STATUS_SORT_ORDER[statusA] ?? 6;
                     const rankB = STATUS_SORT_ORDER[statusB] ?? 6;
                     return dir * (rankA - rankB || a.localeCompare(b));
@@ -2062,7 +2153,7 @@ export default function App() {
                       <tbody>
                         {sortedForTable.map(name => {
                           const b = BIOMARKER_DB[name];
-                          const snap = cumulativeSnapshot[name];
+                          const snap = cumulativeSnapshotMain[name];
                           const val = snap?.val;
                           const status = val !== undefined ? getStatus(name, val) : "unknown";
                           const trend = getTrend(name);
@@ -2129,6 +2220,14 @@ export default function App() {
                 onSaveReading={
                   viewBeforeTrendDetail === "fitness" && FITNESS_LAB_BIOMARKER_KEYS.includes(selectedBiomarker)
                     ? (date, value) => addEntry(selectedPerson, date, { [selectedBiomarker]: value })
+                    : undefined
+                }
+                onPatchReading={
+                  viewBeforeTrendDetail === "fitness" && FITNESS_LAB_BIOMARKER_KEYS.includes(selectedBiomarker)
+                    ? (entryId, value) =>
+                        patchPersonEntryBiomarkers(selectedPerson, entryId, {
+                          [selectedBiomarker]: value === null || value === undefined || String(value).trim() === "" ? null : String(value).trim(),
+                        })
                     : undefined
                 }
               />
@@ -2205,8 +2304,12 @@ export default function App() {
                   </div>
                   {[...personEntries].reverse().map(entry => {
                     const entryBiomarkers = computeDerivedBiomarkers(entry.biomarkers || {});
-                    const markerCount = Object.keys(entryBiomarkers).length;
-                    const optCount = Object.entries(entryBiomarkers).filter(([k, v]) => getStatus(k, v) === "optimal").length;
+                    const entryBiomarkersHistory = Object.fromEntries(
+                      Object.entries(entryBiomarkers).filter(([name]) => allBiomarkers.includes(name) && !isFitnessLabMarkerName(name))
+                    );
+                    const markerCount = Object.keys(entryBiomarkersHistory).length;
+                    const optCount = Object.entries(entryBiomarkersHistory).filter(([k, v]) => getStatus(k, v) === "optimal").length;
+                    if (markerCount === 0) return null;
                     const isPendingDelete = confirmDeleteId === entry.id;
                     const profileName = currentPerson?.name || "";
                     const extractedName = entry.extractedName;
@@ -2268,7 +2371,7 @@ export default function App() {
                         {!isPendingDelete && (
                           biomarkersViewMode === "cards" ? (
                           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>
-                            {Object.entries(entryBiomarkers).filter(([name]) => allBiomarkers.includes(name)).map(([name, val]) => {
+                            {Object.entries(entryBiomarkersHistory).map(([name, val]) => {
                               if (!BIOMARKER_DB[name]) return null;
                               const status = getStatus(name, val);
                               return (
@@ -2304,7 +2407,7 @@ export default function App() {
                               <tbody>
                                 {(() => {
                                   const STATUS_ORD = { optimal: 0, elite: 1, sufficient: 2, low: 3, high: 4, "out-of-range": 5, unknown: 6 };
-                                  const filtered = Object.entries(entryBiomarkers).filter(([name]) => allBiomarkers.includes(name));
+                                  const filtered = Object.entries(entryBiomarkersHistory);
                                   const dir = historyTableSort.dir === "asc" ? 1 : -1;
                                   const sorted = [...filtered].sort(([aName, aVal], [bName, bVal]) => {
                                     if (historyTableSort.by === "name") return dir * aName.localeCompare(bName, undefined, { sensitivity: "base" });
@@ -2471,7 +2574,7 @@ export default function App() {
               {chatConversations.map((c, idx) => (
                 <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0, background: c.id === activeChatId ? `${themeColors.accent}22` : "transparent", border: `1px solid ${c.id === activeChatId ? themeColors.accent : themeColors.border}`, borderRadius: 6, padding: "2px 6px" }}>
                   <button type="button" onClick={(ev) => { ev.stopPropagation(); setActiveChatId(c.id); }} style={{ padding: "2px 6px", fontSize: 11, border: "none", background: "transparent", color: themeColors.text, cursor: "pointer", whiteSpace: "nowrap", fontFamily: CHAT_FONT }}>Chat {idx + 1}</button>
-                  <button type="button" onClick={(ev) => { ev.stopPropagation(); closeChatTab(c.id); }} style={{ padding: "0 2px", fontSize: 12, border: "none", background: "transparent", color: themeColors.textDim, cursor: "pointer", lineHeight: 1, fontFamily: CHAT_FONT }} aria-label="Close conversation">×</button>
+                  <button type="button" onClick={(ev) => { ev.stopPropagation(); closeChatTab(c.id); }} style={{ padding: "0 2px", fontSize: 12, border: "none", background: "transparent", color: themeColors.textDim, cursor: "pointer", lineHeight: 1, fontFamily: CHAT_FONT }} aria-label="Delete conversation">×</button>
                 </div>
               ))}
             </div>

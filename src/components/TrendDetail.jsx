@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   ComposedChart,
   Line,
@@ -17,26 +17,42 @@ import { RANGE_BAND_FILL, RANGE_COLORS, RANGE_BG } from "../constants/rangeColor
 import { MonitorFrequencyBadge } from "./MonitorFrequencyBadge.jsx";
 
 /**
- * @param {{ name: string, personEntries: object[], onBack: () => void, themeColors: object, inlineManualEntry?: boolean, onSaveReading?: (date: string, value: string) => void }} props
+ * @param {{ name: string, personEntries: object[], onBack: () => void, themeColors: object, inlineManualEntry?: boolean, onSaveReading?: (date: string, value: string) => void, onPatchReading?: (entryId: number, value: string | null) => void }} props
  */
-export function TrendDetail({ name, personEntries, onBack, themeColors, inlineManualEntry = false, onSaveReading }) {
+export function TrendDetail({ name, personEntries, onBack, themeColors, inlineManualEntry = false, onSaveReading, onPatchReading }) {
   const b = BIOMARKER_DB[name];
   if (!b) return null;
   const [addDate, setAddDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [addValue, setAddValue] = useState("");
-  const data = personEntries
-    .filter((e) => e.biomarkers?.[name] !== undefined)
-    .map((e) => {
-      const parsed = parseLabValue(e.biomarkers[name]);
-      return {
-        date: e.date,
-        value: parsed.numeric,
-        displayValue: parsed.display,
-        status: getStatus(name, parsed.numeric),
-        label: new Date(e.date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
-        year: new Date(e.date + "T12:00:00").getFullYear(),
-      };
-    });
+  const [editEntryId, setEditEntryId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+
+  const readingRows = useMemo(
+    () =>
+      personEntries
+        .filter((e) => e.biomarkers?.[name] !== undefined)
+        .map((e) => {
+          const parsed = parseLabValue(e.biomarkers[name]);
+          return {
+            entryId: e.id,
+            date: e.date,
+            raw: e.biomarkers[name],
+            numeric: parsed.numeric,
+            displayValue: parsed.display,
+            status: getStatus(name, parsed.numeric),
+          };
+        }),
+    [personEntries, name]
+  );
+
+  const data = readingRows.map((row) => ({
+    date: row.date,
+    value: row.numeric,
+    displayValue: row.displayValue,
+    status: row.status,
+    label: new Date(row.date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+    year: new Date(row.date + "T12:00:00").getFullYear(),
+  }));
 
   const latestVal = data[data.length - 1]?.value;
   const latestDisplay = data[data.length - 1]?.displayValue;
@@ -132,6 +148,32 @@ export function TrendDetail({ name, personEntries, onBack, themeColors, inlineMa
     setAddValue("");
   };
 
+  const startEdit = (row) => {
+    setEditEntryId(row.entryId);
+    setEditValue(Number.isFinite(row.numeric) ? String(row.numeric) : String(row.raw ?? ""));
+  };
+
+  const saveEdit = () => {
+    if (editEntryId == null || !onPatchReading) return;
+    const v = editValue.trim();
+    if (!v) return;
+    onPatchReading(editEntryId, v);
+    setEditEntryId(null);
+    setEditValue("");
+  };
+
+  const cancelEdit = () => {
+    setEditEntryId(null);
+    setEditValue("");
+  };
+
+  const deleteReading = (entryId) => {
+    if (!onPatchReading) return;
+    if (!window.confirm("Remove this reading from your history?")) return;
+    onPatchReading(entryId, null);
+    if (editEntryId === entryId) cancelEdit();
+  };
+
   return (
     <div style={{ animation: "slideIn 0.3s ease" }}>
       <button className="btn btn-secondary" onClick={onBack} style={{ marginBottom: 20 }}>← Back</button>
@@ -162,6 +204,70 @@ export function TrendDetail({ name, personEntries, onBack, themeColors, inlineMa
             <button type="button" className="btn btn-primary" onClick={submitReading} style={{ marginBottom: 1 }}>
               Save reading
             </button>
+          </div>
+        </div>
+      )}
+      {inlineManualEntry && onPatchReading && readingRows.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, maxWidth: 720 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: themeColors.text, marginBottom: 12, fontFamily: "Space Grotesk, sans-serif" }}>Recorded readings</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {readingRows.map((row) => (
+              <div
+                key={row.entryId}
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${themeColors.border}`,
+                  background: themeColors.border ? `${themeColors.border}14` : undefined,
+                }}
+              >
+                <span style={{ fontSize: 12, color: themeColors.textDim, minWidth: 110, fontFamily: "DM Mono, monospace" }}>
+                  {new Date(row.date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                </span>
+                {editEntryId === row.entryId ? (
+                  <>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        border: `1px solid ${themeColors.border}`,
+                        background: themeColors.appBg,
+                        color: themeColors.text,
+                        fontSize: 13,
+                        width: 120,
+                      }}
+                    />
+                    <span style={{ fontSize: 11, color: themeColors.textDim }}>{b.unit}</span>
+                    <button type="button" className="btn btn-primary" style={{ padding: "4px 12px", fontSize: 11 }} onClick={saveEdit}>
+                      Save
+                    </button>
+                    <button type="button" className="btn btn-secondary" style={{ padding: "4px 12px", fontSize: 11 }} onClick={cancelEdit}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: statusColor(row.status), fontFamily: "Space Grotesk, sans-serif" }}>
+                      {row.displayValue} {b.unit}
+                    </span>
+                    <button type="button" className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: 11, marginLeft: "auto" }} onClick={() => startEdit(row)}>
+                      Edit
+                    </button>
+                    <button type="button" className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => deleteReading(row.entryId)}>
+                      Delete
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
